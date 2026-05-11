@@ -64,8 +64,19 @@ export default function Geo() {
         }
         setScanning(true);
         try {
-            const { data } = await api.post("/geo/scan", {}, cq);
-            toast.success(`Scanned ${data.count} engine·query pairs`);
+            // Run each engine as a separate HTTP call in parallel so a single
+            // slow engine can't blow past the ingress 60s idle timeout.
+            const calls = ENGINES.map((engine) =>
+                api
+                    .post("/geo/scan", { engines: [engine] }, cq)
+                    .then((r) => ({ engine, ok: true, count: r.data.count }))
+                    .catch((e) => ({ engine, ok: false, error: formatApiError(e.response?.data?.detail) || e.message })),
+            );
+            const outcomes = await Promise.all(calls);
+            const okEngines = outcomes.filter((o) => o.ok);
+            const failed = outcomes.filter((o) => !o.ok);
+            if (okEngines.length > 0) toast.success(`Scanned ${okEngines.length}/${ENGINES.length} engines`);
+            failed.forEach((f) => toast.error(`${f.engine}: ${f.error}`));
             load();
         } catch (e) {
             toast.error(formatApiError(e.response?.data?.detail) || e.message);

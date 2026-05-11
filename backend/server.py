@@ -553,36 +553,46 @@ async def run_geo_scan(payload: GeoScanIn, client_id: Optional[str] = None, user
     competitors = await db.competitors.find({"client_id": cid}, {"_id": 0}).to_list(100)
     competitor_handles = [c["handle"] for c in competitors]
 
-    results: list[dict] = []
-    for q in queries:
-        for engine in engines:
-            try:
-                text = await ask_engine(
+    import asyncio
+
+    async def _run(q: dict, engine: str) -> dict:
+        try:
+            text = await asyncio.wait_for(
+                ask_engine(
                     engine,
                     "You are an unbiased general-knowledge assistant. Answer concisely.",
                     q["query"],
                     session_id=f"geo-{cid}-{q['id']}-{engine}",
-                )
-            except Exception as exc:
-                log.warning("Engine %s failed: %s", engine, exc)
-                text = f"[ERROR] {exc}"
-            mentioned = detect_mentions(text, q.get("brand_terms", []))
-            comp_hits = extract_competitor_mentions(text, competitor_handles)
-            r = GeoResult(
-                client_id=cid,
-                query_id=q["id"],
-                query=q["query"],
-                engine=engine,
-                response=text[:4000],
-                mentioned=mentioned,
-                competitor_mentions=comp_hits,
+                ),
+                timeout=40,
             )
-            doc = r.model_dump()
-            doc["ran_at"] = _dt(doc["ran_at"])
-            await db.geo_results.insert_one(doc)
-            doc.pop("_id", None)
-            results.append(doc)
-    return {"results": results, "count": len(results)}
+            error = None
+        except Exception as exc:
+            log.warning("Engine %s failed: %s", engine, exc)
+            text = ""
+            error = str(exc)
+        mentioned = detect_mentions(text, q.get("brand_terms", []))
+        comp_hits = extract_competitor_mentions(text, competitor_handles)
+        r = GeoResult(
+            client_id=cid,
+            query_id=q["id"],
+            query=q["query"],
+            engine=engine,
+            response=text[:4000] if not error else f"[ERROR] {error}",
+            mentioned=mentioned,
+            competitor_mentions=comp_hits,
+        )
+        doc = r.model_dump()
+        doc["ran_at"] = _dt(doc["ran_at"])
+        await db.geo_results.insert_one(doc)
+        doc.pop("_id", None)
+        doc["error"] = error
+        return doc
+
+    tasks = [_run(q, engine) for q in queries for engine in engines]
+    results = await asyncio.gather(*tasks)
+    failed = [r["engine"] for r in results if r.get("error")]
+    return {"results": results, "count": len(results), "failed_engines": failed}
 
 
 @api.get("/geo/results")
