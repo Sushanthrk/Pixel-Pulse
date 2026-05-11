@@ -1,0 +1,93 @@
+{
+  "theme_archetype": {
+    "domain": "Analytics Dashboard / Creative Agency",
+    "theme": "DARK",
+    "archetype": "Cinematic / High-Contrast Dark",
+    "description": "Editorial + cinematic + film-set UI with extreme high contrast. Sharp edges, technical aesthetic, precision instruments vibe."
+  },
+  "colors": {
+    "background": {
+      "primary": "#050505",
+      "secondary": "#0A0A0A",
+      "card": "#050505"
+    },
+    "text": {
+      "primary": "#fafafa",
+      "secondary": "#a0a0ab",
+      "muted": "#a0a0ab80"
+    },
+    "accent": {
+      "primary": "#e6192b",
+      "hover": "#ff2a3d",
+      "muted": "#4a0b10"
+    },
+    "border": {
+      "default": "rgba(160, 160, 171, 0.2)",
+      "focus": "rgba(230, 25, 43, 0.5)",
+      "divider": "rgba(160, 160, 171, 0.15)"
+    }
+  },
+  "typography": {
+    "fonts": {
+      "display": "'Bricolage Grotesque', sans-serif",
+      "body": "'Inter', sans-serif",
+      "mono": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace"
+    },
+    "scale": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl font-['Bricolage_Grotesque'] uppercase tracking-tight font-black",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl font-['Bricolage_Grotesque'] uppercase tracking-tight font-bold",
+      "h3": "text-xl sm:text-2xl font-['Bricolage_Grotesque'] uppercase tracking-tight font-bold",
+      "h4": "text-lg sm:text-xl font-['Bricolage_Grotesque'] uppercase font-semibold",
+      "body": "text-base font-['Inter'] font-normal text-[#a0a0ab] leading-relaxed",
+      "small": "text-sm font-['Inter'] text-[#a0a0ab]",
+      "tech_label": "text-xs font-mono uppercase tracking-[0.2em] text-[#a0a0ab]"
+    }
+  },
+  "ui_elements": {
+    "buttons": {
+      "primary": "rounded-full bg-[#e6192b] text-[#fafafa] uppercase tracking-[0.22em] font-['Bricolage_Grotesque'] font-bold text-xs px-6 py-3 hover:bg-[#ff2a3d] transition-colors border border-transparent hover:border-[#fafafa]/20",
+      "secondary": "rounded-full bg-transparent text-[#fafafa] uppercase tracking-[0.22em] font-['Bricolage_Grotesque'] font-bold text-xs px-6 py-3 border border-[#a0a0ab]/20 hover:border-[#fafafa] hover:bg-[#fafafa]/5 transition-colors",
+      "ghost": "uppercase tracking-[0.22em] font-['Bricolage_Grotesque'] font-bold text-xs text-[#a0a0ab] hover:text-[#fafafa] transition-colors"
+    },
+    "cards": {
+      "base": "rounded-none border border-[#a0a0ab]/20 bg-[#050505] p-6 relative group",
+      "hover": "hover:border-[#a0a0ab]/40 transition-colors"
+    },
+    "cinematic_flairs": {
+      "rec_dot": "w-2 h-2 rounded-full bg-[#e6192b] animate-pulse inline-block",
+      "hairline_divider": "h-px w-full bg-[#a0a0ab]/15",
+      "corner_brackets": "absolute w-2 h-2 border-[#e6192b]",
+      "timecode": "font-mono text-[#a0a0ab] text-xs tracking-widest",
+      "crosshair": "absolute w-3 h-3 text-[#a0a0ab]/30"
+    }
+  },
+  "layout_and_spacing": {
+    "container": "max-w-7xl mx-auto px-6 lg:px-8",
+    "bento_grid": "grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6",
+    "generous_spacing": "py-24 md:py-32"
+  },
+  "components_instructions": {
+    "navigation": "Sticky header with glassmorphism (backdrop-blur-xl bg-[#050505]/80), hairline bottom border. Include REC dot pulsing next to 'LIVE TIMECODE' (e.g., 00:00:00:00) powered by real-time JS interval. Workspace switcher on right. Logout ghost CTA.",
+    "dashboard_grid": "Dense 'Control Room' grid. No rounded corners anywhere except for pill buttons. Use 1px sharp borders. Add small red CSS corner brackets (top-left, bottom-right) to key metric cards on hover.",
+    "charts": "Use Recharts. Tooltips must be dark with sharp corners. Grid lines should be hairline (#a0a0ab/10). Line chart stroke: #e6192b. Donut chart colors: #e6192b, #fafafa, #a0a0ab, #4a0b10, #222222.",
+    "badges": "Auto-synced: text-xs font-mono uppercase tracking-widest border border-[#e6192b]/30 text-[#e6192b] bg-[#e6192b]/5 px-2 py-1 rounded-none. Manual: border-[#a0a0ab]/30 text-[#a0a0ab].",
+    "inputs": "Shadcn UI but heavily overridden. border-[#a0a0ab]/20, rounded-none, bg-transparent, focus-visible:ring-1 focus-visible:ring-[#e6192b] focus-visible:ring-offset-0. Placeholder: text-[#a0a0ab]/50 font-mono text-sm."
+  },
+  "data_testid_rules": "All interactive elements MUST include data-testid attribute. Kebab-case, role-based. e.g., 'login-submit-btn', 'nav-workspace-switcher', 'client-card-enable-toggle'.",
+  "motion": {
+    "hover": "transition-all duration-300 ease-out",
+    "micro_interactions": "Cards slightly brighten borders on hover. Data rows in tables highlight background to #fafafa/5. Minimalist, no bouncy animations."
+  },
+  "image_urls": [
+    {
+      "category": "login_background",
+      "url": "https://images.pexels.com/photos/28534618/pexels-photo-28534618.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Monochrome studio spotlight casting light in a dark room - perfect for the login screen dark editorial cinematic vibe. Apply a very dark overlay (bg-black/80)."
+    },
+    {
+      "category": "dashboard_texture",
+      "url": "https://images.pexels.com/photos/15128321/pexels-photo-15128321.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Minimalist studio scene with lights casting shadows on wall grid. Use as a subtle background pattern overlay for dashboard empty states, heavily darkened."
+    }
+  ]
+}
