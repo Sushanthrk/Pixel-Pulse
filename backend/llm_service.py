@@ -20,6 +20,9 @@ async def ask_engine(engine: str, system_prompt: str, user_prompt: str, session_
         raise ValueError(f"Unknown engine {engine}")
     provider, model = ENGINES[engine]
     api_key = os.environ["EMERGENT_LLM_KEY"]
+    # gpt-5 is a reasoning model — it spends a large chunk of tokens on internal
+    # reasoning before emitting output, so we give it a much larger budget.
+    max_tokens = 6000 if provider == "openai" else 1500
     chat = (
         LlmChat(
             api_key=api_key,
@@ -27,7 +30,7 @@ async def ask_engine(engine: str, system_prompt: str, user_prompt: str, session_
             system_message=system_prompt,
         )
         .with_model(provider, model)
-        .with_params(max_tokens=1024)
+        .with_params(max_tokens=max_tokens)
     )
     msg = UserMessage(text=user_prompt)
     response = await chat.send_message(msg)

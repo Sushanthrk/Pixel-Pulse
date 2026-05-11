@@ -1,4 +1,4 @@
-import { NavLink, useNavigate } from "react-router-dom";
+import { NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { api } from "../lib/api";
@@ -19,6 +19,7 @@ const ADMIN_NAV = [{ to: "/admin/clients", label: "Clients" }, ...CLIENT_NAV];
 export default function Layout({ children }) {
     const { user, logout, scopedClientId, setWorkspace } = useAuth();
     const navigate = useNavigate();
+    const location = useLocation();
     const [clients, setClients] = useState([]);
 
     useEffect(() => {
@@ -118,7 +119,9 @@ export default function Layout({ children }) {
                 </div>
             </header>
             <main className="max-w-7xl mx-auto px-6 lg:px-8 pt-10 pb-16 animate-fade-in">
-                {user.role === "admin" && !scopedClientId ? (
+                {user.role === "admin" &&
+                !scopedClientId &&
+                location.pathname !== "/admin/clients" ? (
                     <NoWorkspaceNotice clients={clients} />
                 ) : (
                     children
