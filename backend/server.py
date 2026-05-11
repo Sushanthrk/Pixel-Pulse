@@ -41,6 +41,7 @@ from models import (
     CreateClientIn,
     GeoQuery,
     GeoQueryIn,
+    GeoRecommendation,
     GeoResult,
     LoginIn,
     Post,
@@ -644,6 +645,149 @@ async def run_geo_scan(payload: GeoScanIn, client_id: Optional[str] = None, user
 async def list_geo_results(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
     cid = await _client_scope(user, client_id)
     return await db.geo_results.find({"client_id": cid}, {"_id": 0}).sort("ran_at", -1).to_list(500)
+
+
+# ---- Action plans (LLM, structured JSON) ----
+import json as _json
+import re as _re
+
+
+def _parse_plan_json(text: str) -> dict | None:
+    """Try hard to extract the JSON object the LLM emitted."""
+    if not text:
+        return None
+    # strip code fences
+    cleaned = _re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=_re.MULTILINE).strip()
+    try:
+        return _json.loads(cleaned)
+    except Exception:
+        pass
+    # last-ditch: grab the largest {...} block
+    m = _re.search(r"\{[\s\S]*\}", cleaned)
+    if not m:
+        return None
+    try:
+        return _json.loads(m.group(0))
+    except Exception:
+        return None
+
+
+@api.post("/geo/recommendations/{query_id}")
+async def generate_geo_plan(query_id: str, client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    q = await db.geo_queries.find_one({"id": query_id, "client_id": cid}, {"_id": 0})
+    if not q:
+        raise HTTPException(status_code=404, detail="Query not found")
+
+    # gather context: latest scan results per engine + competitors mentioned
+    results = await db.geo_results.find(
+        {"client_id": cid, "query_id": query_id}, {"_id": 0}
+    ).sort("ran_at", -1).to_list(30)
+    latest_by_engine: dict[str, dict] = {}
+    for r in results:
+        if r["engine"] not in latest_by_engine:
+            latest_by_engine[r["engine"]] = r
+    competitors = await db.competitors.find({"client_id": cid}, {"_id": 0}).to_list(100)
+    client = await db.clients.find_one({"id": cid}, {"_id": 0})
+
+    mention_summary = []
+    competitor_hits: list[str] = []
+    for engine, r in latest_by_engine.items():
+        mention_summary.append(
+            f"- {engine}: {'MENTIONED' if r['mentioned'] else 'NOT MENTIONED'} brand "
+            f"(competitors surfaced: {', '.join(r.get('competitor_mentions') or []) or 'none'})"
+        )
+        competitor_hits.extend(r.get("competitor_mentions") or [])
+
+    competitor_handles = [c["handle"] for c in competitors]
+    company = (client or {}).get("company") or (client or {}).get("name", "the brand")
+
+    system = (
+        "You are a Generative Engine Optimisation (GEO) strategist. "
+        "You output ONLY valid JSON. No prose before or after."
+    )
+    user_prompt = f"""
+Brand: {company}
+Brand terms tracked: {", ".join(q.get("brand_terms", [])) or "(none)"}
+Target GEO query: "{q["query"]}"
+Latest engine snapshot:
+{chr(10).join(mention_summary) or "- (no scans yet — assume brand is not appearing)"}
+Competitors being mentioned by engines / tracked: {", ".join(set(competitor_hits + competitor_handles)) or "(none provided)"}
+
+Produce a JSON object EXACTLY in this shape, no extra keys:
+
+{{
+  "summary": "2-3 sentence diagnosis of why the brand is or isn't surfacing for this query and what the realistic path looks like",
+  "estimated_months": <integer 1-12 — realistic time-to-first-mention if the plan is followed>,
+  "confidence": "Low" | "Medium" | "High",
+  "actions": [
+    {{
+      "title": "Short action title (max 8 words)",
+      "rationale": "1-2 sentences on why this moves the needle for GEO specifically",
+      "effort": "Low" | "Medium" | "High",
+      "timeframe": "Month 1" | "Month 1-2" | "Month 2-3" | "Month 3-4" | "Month 4-6" | "Ongoing"
+    }}
+  ],
+  "timeline": [
+    {{ "month": 1, "milestone": "..." }},
+    {{ "month": 2, "milestone": "..." }},
+    {{ "month": 3, "milestone": "..." }},
+    {{ "month": 4, "milestone": "..." }},
+    {{ "month": 5, "milestone": "..." }},
+    {{ "month": 6, "milestone": "..." }}
+  ]
+}}
+
+Rules:
+- 5 to 7 actions, ordered by impact.
+- timeline must have one entry per month from 1 through estimated_months (max 6).
+- Be specific to GEO (LLM citation surfaces, Reddit/Wikipedia/listicle presence, structured data, schema markup, expert quotes, Substack/Medium presence, podcast guesting) — NOT generic SEO platitudes.
+- If competitors are mentioned, reference how to displace or co-appear with them.
+"""
+
+    text = await ask_engine(
+        "claude-sonnet-4.5",
+        system,
+        user_prompt,
+        session_id=f"geo-plan-{cid}-{query_id}",
+    )
+    parsed = _parse_plan_json(text) or {}
+
+    rec = GeoRecommendation(
+        client_id=cid,
+        query_id=query_id,
+        query=q["query"],
+        summary=parsed.get("summary", "")[:1000],
+        estimated_months=int(parsed.get("estimated_months") or 6) if isinstance(parsed.get("estimated_months"), (int, float, str)) else 6,
+        confidence=str(parsed.get("confidence") or "Medium"),
+        actions=parsed.get("actions") or [],
+        timeline=parsed.get("timeline") or [],
+        raw_payload=text[:8000],
+    )
+    doc = rec.model_dump()
+    doc["created_at"] = _dt(doc["created_at"])
+    # overwrite any previous plan for this query
+    await db.geo_recommendations.delete_many({"client_id": cid, "query_id": query_id})
+    await db.geo_recommendations.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/geo/recommendations")
+async def list_geo_plans(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    return await db.geo_recommendations.find({"client_id": cid}, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+
+@api.delete("/geo/recommendations/{plan_id}")
+async def delete_geo_plan(plan_id: str, user: dict = Depends(get_current_user)):
+    rec = await db.geo_recommendations.find_one({"id": plan_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Not found")
+    if user["role"] != "admin" and rec["client_id"] != user.get("client_id"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    await db.geo_recommendations.delete_one({"id": plan_id})
+    return {"ok": True}
 
 
 # ====================================================
