@@ -1,89 +1,813 @@
-from fastapi import FastAPI, APIRouter
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
-import logging
-from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
-import uuid
-from datetime import datetime, timezone
+"""Pixelgrok Pulse - FastAPI backend."""
+from __future__ import annotations
 
+import logging
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import List, Optional
+
+from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel
 
-# Create the main app without a prefix
-app = FastAPI()
+from auth import (
+    clear_auth_cookies,
+    create_access_token,
+    create_refresh_token,
+    get_current_user,
+    hash_password,
+    require_admin,
+    set_auth_cookies,
+    verify_password,
+)
+from integrations import fetch_reddit, fetch_rss, fetch_youtube, google_search_rank
+from llm_service import ENGINES, ask_engine, detect_mentions, extract_competitor_mentions
+from models import (
+    AUTO_PLATFORMS,
+    Channel,
+    ChannelIn,
+    ClientAccount,
+    Competitor,
+    CompetitorIn,
+    CompetitorPost,
+    CompetitorPostIn,
+    CreateClientIn,
+    GeoQuery,
+    GeoQueryIn,
+    GeoResult,
+    LoginIn,
+    Post,
+    PostIn,
+    Recommendation,
+    SeoKeyword,
+    SeoKeywordIn,
+    SeoRank,
+    SeoRankIn,
+    User,
+)
 
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("pixelgrok")
+
+# ---------- DB ----------
+mongo_url = os.environ["MONGO_URL"]
+mongo_client = AsyncIOMotorClient(mongo_url)
+db = mongo_client[os.environ["DB_NAME"]]
+
+# ---------- App ----------
+app = FastAPI(title="Pixelgrok Pulse")
+api = APIRouter(prefix="/api")
 
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+@app.on_event("startup")
+async def _startup() -> None:
+    await db.users.create_index("email", unique=True)
+    await db.clients.create_index("email", unique=True)
+    await db.channels.create_index([("client_id", 1), ("platform", 1)])
+    await db.posts.create_index([("client_id", 1), ("posted_at", -1)])
+    await db.competitor_posts.create_index([("client_id", 1), ("posted_at", -1)])
+    await db.geo_results.create_index([("client_id", 1), ("ran_at", -1)])
+    await db.seo_ranks.create_index([("client_id", 1), ("recorded_at", -1)])
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
+    # Seed admin from .env
+    admin_email = os.environ.get("ADMIN_EMAIL", "").lower().strip()
+    admin_password = os.environ.get("ADMIN_PASSWORD", "")
+    if admin_email and admin_password:
+        existing = await db.users.find_one({"email": admin_email})
+        if existing is None:
+            user = User(email=admin_email, name="Pixelgrok Admin", role="admin")
+            doc = user.model_dump()
+            doc["created_at"] = doc["created_at"].isoformat()
+            doc["password_hash"] = hash_password(admin_password)
+            await db.users.insert_one(doc)
+            log.info("Seeded admin user %s", admin_email)
+        else:
+            # keep hash in sync with .env to support password rotation
+            if not verify_password(admin_password, existing.get("password_hash", "")):
+                await db.users.update_one(
+                    {"email": admin_email},
+                    {"$set": {"password_hash": hash_password(admin_password)}},
+                )
 
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
-async def root():
-    return {"message": "Hello World"}
+    # Write test credentials
+    try:
+        creds_dir = Path("/app/memory")
+        creds_dir.mkdir(parents=True, exist_ok=True)
+        (creds_dir / "test_credentials.md").write_text(
+            "# Pixelgrok Pulse Test Credentials\n\n"
+            f"## Admin\n- Email: `{admin_email}`\n- Password: `{admin_password}`\n- Role: admin\n\n"
+            "## Auth endpoints\n- POST `/api/auth/login`\n- GET `/api/auth/me`\n- POST `/api/auth/logout`\n"
+        )
+    except Exception as exc:
+        log.warning("Couldn't write test_credentials.md: %s", exc)
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    mongo_client.close()
 
-# Include the router in the main app
-app.include_router(api_router)
 
+# ---------- helpers ----------
+def _dt(value) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
+async def _client_scope(user: dict, client_id: Optional[str] = None) -> str:
+    """Resolve which client_id a request should be scoped to.
+    Admins can pass `?client_id=` query; clients are pinned to their own."""
+    if user["role"] == "admin":
+        if not client_id:
+            raise HTTPException(status_code=400, detail="client_id is required for admin")
+        if not await db.clients.find_one({"id": client_id}):
+            raise HTTPException(status_code=404, detail="Client not found")
+        return client_id
+    cid = user.get("client_id")
+    if not cid:
+        raise HTTPException(status_code=403, detail="User has no client scope")
+    return cid
+
+
+# ====================================================
+# AUTH
+# ====================================================
+@api.post("/auth/login")
+async def login(payload: LoginIn, response: Response):
+    email = payload.email.lower().strip()
+    user = await db.users.find_one({"email": email})
+    if not user or not verify_password(payload.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=403, detail="Account disabled")
+    # If a client, ensure client account is active
+    if user["role"] == "client" and user.get("client_id"):
+        client = await db.clients.find_one({"id": user["client_id"]}, {"_id": 0})
+        if client and not client.get("is_active", True):
+            raise HTTPException(status_code=403, detail="Client workspace is disabled")
+    access = create_access_token(user["id"], user["email"], user["role"])
+    refresh = create_refresh_token(user["id"])
+    set_auth_cookies(response, access, refresh)
+    user.pop("_id", None)
+    user.pop("password_hash", None)
+    return {"user": user, "access_token": access}
+
+
+@api.post("/auth/logout")
+async def logout(response: Response, _: dict = Depends(get_current_user)):
+    clear_auth_cookies(response)
+    return {"ok": True}
+
+
+@api.get("/auth/me")
+async def me(user: dict = Depends(get_current_user)):
+    if user.get("client_id"):
+        client = await db.clients.find_one({"id": user["client_id"]}, {"_id": 0})
+        user["client"] = client
+    return user
+
+
+# ====================================================
+# ADMIN: client management
+# ====================================================
+@api.get("/admin/clients")
+async def list_clients(_: dict = Depends(require_admin)):
+    docs = await db.clients.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    # attach user email
+    return docs
+
+
+@api.post("/admin/clients")
+async def create_client(payload: CreateClientIn, _: dict = Depends(require_admin)):
+    email = payload.email.lower().strip()
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(status_code=400, detail="Email already exists")
+    client = ClientAccount(name=payload.name, company=payload.company, email=email)
+    cdoc = client.model_dump()
+    cdoc["created_at"] = cdoc["created_at"].isoformat()
+    await db.clients.insert_one(cdoc)
+    # create the linked user
+    user = User(email=email, name=payload.name, role="client", client_id=client.id)
+    udoc = user.model_dump()
+    udoc["created_at"] = udoc["created_at"].isoformat()
+    udoc["password_hash"] = hash_password(payload.password)
+    await db.users.insert_one(udoc)
+    cdoc.pop("_id", None)
+    return cdoc
+
+
+@api.patch("/admin/clients/{client_id}/toggle")
+async def toggle_client(client_id: str, _: dict = Depends(require_admin)):
+    c = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(status_code=404, detail="Client not found")
+    new_state = not c.get("is_active", True)
+    await db.clients.update_one({"id": client_id}, {"$set": {"is_active": new_state}})
+    await db.users.update_many({"client_id": client_id}, {"$set": {"is_active": new_state}})
+    c["is_active"] = new_state
+    return c
+
+
+@api.delete("/admin/clients/{client_id}")
+async def delete_client(client_id: str, _: dict = Depends(require_admin)):
+    res = await db.clients.delete_one({"id": client_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Client not found")
+    await db.users.delete_many({"client_id": client_id})
+    await db.channels.delete_many({"client_id": client_id})
+    await db.posts.delete_many({"client_id": client_id})
+    await db.competitors.delete_many({"client_id": client_id})
+    await db.competitor_posts.delete_many({"client_id": client_id})
+    await db.geo_queries.delete_many({"client_id": client_id})
+    await db.geo_results.delete_many({"client_id": client_id})
+    await db.seo_keywords.delete_many({"client_id": client_id})
+    await db.seo_ranks.delete_many({"client_id": client_id})
+    return {"ok": True}
+
+
+# ====================================================
+# CHANNELS
+# ====================================================
+@api.get("/channels")
+async def list_channels(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    return await db.channels.find({"client_id": cid}, {"_id": 0}).to_list(200)
+
+
+@api.post("/channels")
+async def create_channel(payload: ChannelIn, client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    ch = Channel(
+        client_id=cid,
+        platform=payload.platform,
+        handle=payload.handle,
+        url=payload.url,
+        sync_mode="auto" if payload.platform in AUTO_PLATFORMS else "manual",
+        status="pending",
+    )
+    doc = ch.model_dump()
+    doc["created_at"] = doc["created_at"].isoformat()
+    await db.channels.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.delete("/channels/{channel_id}")
+async def delete_channel(channel_id: str, user: dict = Depends(get_current_user)):
+    ch = await db.channels.find_one({"id": channel_id}, {"_id": 0})
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    if user["role"] != "admin" and ch["client_id"] != user.get("client_id"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    await db.channels.delete_one({"id": channel_id})
+    await db.posts.delete_many({"channel_id": channel_id})
+    return {"ok": True}
+
+
+# ====================================================
+# POSTS (own channel)
+# ====================================================
+@api.get("/posts")
+async def list_posts(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    return await db.posts.find({"client_id": cid}, {"_id": 0}).sort("posted_at", -1).to_list(500)
+
+
+@api.post("/posts")
+async def create_post(payload: PostIn, client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    ch = await db.channels.find_one({"id": payload.channel_id, "client_id": cid}, {"_id": 0})
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    post = Post(
+        client_id=cid,
+        platform=ch["platform"],
+        source="manual",
+        **payload.model_dump(),
+    )
+    doc = post.model_dump()
+    doc["posted_at"] = _dt(doc["posted_at"])
+    doc["created_at"] = _dt(doc["created_at"])
+    await db.posts.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.delete("/posts/{post_id}")
+async def delete_post(post_id: str, user: dict = Depends(get_current_user)):
+    post = await db.posts.find_one({"id": post_id}, {"_id": 0})
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    if user["role"] != "admin" and post["client_id"] != user.get("client_id"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    await db.posts.delete_one({"id": post_id})
+    return {"ok": True}
+
+
+# ====================================================
+# SYNC (auto-pull)
+# ====================================================
+@api.post("/sync/channel/{channel_id}")
+async def sync_channel(channel_id: str, user: dict = Depends(get_current_user)):
+    ch = await db.channels.find_one({"id": channel_id}, {"_id": 0})
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    if user["role"] != "admin" and ch["client_id"] != user.get("client_id"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    platform = ch["platform"]
+    posts, is_real = [], False
+    if platform == "youtube":
+        posts, is_real = fetch_youtube(ch.get("handle") or ch.get("url", ""))
+    elif platform in {"medium", "substack", "blog"}:
+        posts, is_real = fetch_rss(ch.get("url") or ch.get("handle", ""))
+    elif platform == "reddit":
+        posts, is_real = fetch_reddit(ch.get("handle") or "")
+    else:
+        raise HTTPException(status_code=400, detail=f"Auto sync not available for {platform}")
+
+    # wipe previous auto posts for the channel, keep manual ones
+    await db.posts.delete_many({"channel_id": channel_id, "source": "auto"})
+    inserted = 0
+    for p in posts:
+        post = Post(
+            client_id=ch["client_id"],
+            platform=platform,
+            channel_id=channel_id,
+            source="auto" if is_real else "mock",
+            title=p.get("title", ""),
+            snippet=p.get("snippet", ""),
+            url=p.get("url", ""),
+            posted_at=datetime.fromisoformat(p["posted_at"].replace("Z", "+00:00")) if isinstance(p["posted_at"], str) else p["posted_at"],
+            likes=p.get("likes", 0),
+            comments=p.get("comments", 0),
+            shares=p.get("shares", 0),
+            views=p.get("views", 0),
+            media_type=p.get("media_type", "text"),
+            hashtags=p.get("hashtags", []),
+        )
+        doc = post.model_dump()
+        doc["posted_at"] = _dt(doc["posted_at"])
+        doc["created_at"] = _dt(doc["created_at"])
+        await db.posts.insert_one(doc)
+        inserted += 1
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db.channels.update_one(
+        {"id": channel_id},
+        {"$set": {"last_sync": now, "status": "connected" if is_real else "mocked"}},
+    )
+    return {"inserted": inserted, "is_real": is_real, "status": "connected" if is_real else "mocked"}
+
+
+# ====================================================
+# COMPETITORS
+# ====================================================
+@api.get("/competitors")
+async def list_competitors(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    return await db.competitors.find({"client_id": cid}, {"_id": 0}).to_list(200)
+
+
+@api.post("/competitors")
+async def create_competitor(payload: CompetitorIn, client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    count = await db.competitors.count_documents({"client_id": cid, "platform": payload.platform})
+    if count >= 5:
+        raise HTTPException(status_code=400, detail="Max 5 competitors per platform")
+    comp = Competitor(client_id=cid, **payload.model_dump())
+    doc = comp.model_dump()
+    doc["created_at"] = _dt(doc["created_at"])
+    await db.competitors.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.delete("/competitors/{competitor_id}")
+async def delete_competitor(competitor_id: str, user: dict = Depends(get_current_user)):
+    comp = await db.competitors.find_one({"id": competitor_id}, {"_id": 0})
+    if not comp:
+        raise HTTPException(status_code=404, detail="Not found")
+    if user["role"] != "admin" and comp["client_id"] != user.get("client_id"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    await db.competitors.delete_one({"id": competitor_id})
+    await db.competitor_posts.delete_many({"competitor_id": competitor_id})
+    return {"ok": True}
+
+
+@api.post("/competitors/{competitor_id}/sync")
+async def sync_competitor(competitor_id: str, user: dict = Depends(get_current_user)):
+    comp = await db.competitors.find_one({"id": competitor_id}, {"_id": 0})
+    if not comp:
+        raise HTTPException(status_code=404, detail="Not found")
+    if user["role"] != "admin" and comp["client_id"] != user.get("client_id"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    platform = comp["platform"]
+    posts, is_real = [], False
+    if platform == "youtube":
+        posts, is_real = fetch_youtube(comp.get("handle") or comp.get("url", ""))
+    elif platform in {"medium", "substack", "blog"}:
+        posts, is_real = fetch_rss(comp.get("url") or comp.get("handle", ""))
+    elif platform == "reddit":
+        posts, is_real = fetch_reddit(comp.get("handle") or "")
+    else:
+        raise HTTPException(status_code=400, detail=f"Auto sync not available for {platform}")
+
+    await db.competitor_posts.delete_many({"competitor_id": competitor_id})
+    for p in posts:
+        cp = CompetitorPost(
+            client_id=comp["client_id"],
+            platform=platform,
+            competitor_id=competitor_id,
+            source="auto" if is_real else "mock",
+            title=p.get("title", ""),
+            snippet=p.get("snippet", ""),
+            url=p.get("url", ""),
+            posted_at=datetime.fromisoformat(p["posted_at"].replace("Z", "+00:00")) if isinstance(p["posted_at"], str) else p["posted_at"],
+            likes=p.get("likes", 0),
+            comments=p.get("comments", 0),
+            shares=p.get("shares", 0),
+            views=p.get("views", 0),
+            media_type=p.get("media_type", "text"),
+            hashtags=p.get("hashtags", []),
+        )
+        doc = cp.model_dump()
+        doc["posted_at"] = _dt(doc["posted_at"])
+        doc["created_at"] = _dt(doc["created_at"])
+        await db.competitor_posts.insert_one(doc)
+
+    return {"inserted": len(posts), "is_real": is_real}
+
+
+@api.get("/competitors/{competitor_id}/posts")
+async def list_competitor_posts(competitor_id: str, user: dict = Depends(get_current_user)):
+    comp = await db.competitors.find_one({"id": competitor_id}, {"_id": 0})
+    if not comp:
+        raise HTTPException(status_code=404, detail="Not found")
+    if user["role"] != "admin" and comp["client_id"] != user.get("client_id"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return await db.competitor_posts.find({"competitor_id": competitor_id}, {"_id": 0}).sort("posted_at", -1).to_list(200)
+
+
+@api.post("/competitors/{competitor_id}/manual-snapshot")
+async def add_manual_competitor_post(competitor_id: str, payload: CompetitorPostIn, user: dict = Depends(get_current_user)):
+    comp = await db.competitors.find_one({"id": competitor_id}, {"_id": 0})
+    if not comp:
+        raise HTTPException(status_code=404, detail="Not found")
+    if user["role"] != "admin" and comp["client_id"] != user.get("client_id"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    cp = CompetitorPost(
+        client_id=comp["client_id"],
+        platform=comp["platform"],
+        source="manual",
+        **payload.model_dump(),
+    )
+    doc = cp.model_dump()
+    doc["posted_at"] = _dt(doc["posted_at"])
+    doc["created_at"] = _dt(doc["created_at"])
+    await db.competitor_posts.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.post("/competitors/{competitor_id}/cluster")
+async def cluster_topics(competitor_id: str, user: dict = Depends(get_current_user)):
+    comp = await db.competitors.find_one({"id": competitor_id}, {"_id": 0})
+    if not comp:
+        raise HTTPException(status_code=404, detail="Not found")
+    if user["role"] != "admin" and comp["client_id"] != user.get("client_id"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    posts = await db.competitor_posts.find({"competitor_id": competitor_id}, {"_id": 0, "title": 1, "snippet": 1}).to_list(60)
+    if not posts:
+        return {"clusters": [], "note": "No posts to cluster yet."}
+    titles = "\n".join(f"- {p.get('title') or p.get('snippet','')[:120]}" for p in posts[:50])
+    prompt = (
+        "Cluster the following social/blog post titles into 4-7 themes. "
+        "Return ONLY a short numbered list like '1. Theme name — short description'.\n\n"
+        f"{titles}"
+    )
+    text = await ask_engine(
+        "claude-sonnet-4.5",
+        "You are a brand analytics assistant for a media agency.",
+        prompt,
+        session_id=f"cluster-{competitor_id}",
+    )
+    return {"clusters_text": text, "post_count": len(posts)}
+
+
+# ====================================================
+# GEO mention tracker
+# ====================================================
+@api.get("/geo/queries")
+async def list_geo_queries(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    return await db.geo_queries.find({"client_id": cid}, {"_id": 0}).to_list(100)
+
+
+@api.post("/geo/queries")
+async def create_geo_query(payload: GeoQueryIn, client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    q = GeoQuery(client_id=cid, query=payload.query, brand_terms=payload.brand_terms)
+    doc = q.model_dump()
+    doc["created_at"] = _dt(doc["created_at"])
+    await db.geo_queries.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.delete("/geo/queries/{query_id}")
+async def delete_geo_query(query_id: str, user: dict = Depends(get_current_user)):
+    q = await db.geo_queries.find_one({"id": query_id}, {"_id": 0})
+    if not q:
+        raise HTTPException(status_code=404, detail="Not found")
+    if user["role"] != "admin" and q["client_id"] != user.get("client_id"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    await db.geo_queries.delete_one({"id": query_id})
+    return {"ok": True}
+
+
+class GeoScanIn(BaseModel):
+    query_ids: Optional[List[str]] = None
+    engines: Optional[List[str]] = None  # subset of ENGINES.keys()
+
+
+@api.post("/geo/scan")
+async def run_geo_scan(payload: GeoScanIn, client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    queries_q = {"client_id": cid}
+    if payload.query_ids:
+        queries_q["id"] = {"$in": payload.query_ids}
+    queries = await db.geo_queries.find(queries_q, {"_id": 0}).to_list(50)
+    if not queries:
+        raise HTTPException(status_code=400, detail="No queries to scan")
+
+    engines = payload.engines or list(ENGINES.keys())
+    competitors = await db.competitors.find({"client_id": cid}, {"_id": 0}).to_list(100)
+    competitor_handles = [c["handle"] for c in competitors]
+
+    results: list[dict] = []
+    for q in queries:
+        for engine in engines:
+            try:
+                text = await ask_engine(
+                    engine,
+                    "You are an unbiased general-knowledge assistant. Answer concisely.",
+                    q["query"],
+                    session_id=f"geo-{cid}-{q['id']}-{engine}",
+                )
+            except Exception as exc:
+                log.warning("Engine %s failed: %s", engine, exc)
+                text = f"[ERROR] {exc}"
+            mentioned = detect_mentions(text, q.get("brand_terms", []))
+            comp_hits = extract_competitor_mentions(text, competitor_handles)
+            r = GeoResult(
+                client_id=cid,
+                query_id=q["id"],
+                query=q["query"],
+                engine=engine,
+                response=text[:4000],
+                mentioned=mentioned,
+                competitor_mentions=comp_hits,
+            )
+            doc = r.model_dump()
+            doc["ran_at"] = _dt(doc["ran_at"])
+            await db.geo_results.insert_one(doc)
+            doc.pop("_id", None)
+            results.append(doc)
+    return {"results": results, "count": len(results)}
+
+
+@api.get("/geo/results")
+async def list_geo_results(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    return await db.geo_results.find({"client_id": cid}, {"_id": 0}).sort("ran_at", -1).to_list(500)
+
+
+# ====================================================
+# SEO ranking (manual + optional Programmable Search)
+# ====================================================
+@api.get("/seo/keywords")
+async def list_seo_keywords(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    return await db.seo_keywords.find({"client_id": cid}, {"_id": 0}).to_list(200)
+
+
+@api.post("/seo/keywords")
+async def add_seo_keyword(payload: SeoKeywordIn, client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    k = SeoKeyword(client_id=cid, **payload.model_dump())
+    doc = k.model_dump()
+    doc["created_at"] = _dt(doc["created_at"])
+    await db.seo_keywords.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.delete("/seo/keywords/{keyword_id}")
+async def delete_seo_keyword(keyword_id: str, user: dict = Depends(get_current_user)):
+    k = await db.seo_keywords.find_one({"id": keyword_id}, {"_id": 0})
+    if not k:
+        raise HTTPException(status_code=404, detail="Not found")
+    if user["role"] != "admin" and k["client_id"] != user.get("client_id"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    await db.seo_keywords.delete_one({"id": keyword_id})
+    await db.seo_ranks.delete_many({"keyword_id": keyword_id})
+    return {"ok": True}
+
+
+@api.post("/seo/keywords/{keyword_id}/manual-rank")
+async def manual_rank(keyword_id: str, payload: SeoRankIn, user: dict = Depends(get_current_user)):
+    k = await db.seo_keywords.find_one({"id": keyword_id}, {"_id": 0})
+    if not k:
+        raise HTTPException(status_code=404, detail="Not found")
+    if user["role"] != "admin" and k["client_id"] != user.get("client_id"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    r = SeoRank(client_id=k["client_id"], keyword_id=keyword_id, rank=payload.rank, note=payload.note, source="manual")
+    doc = r.model_dump()
+    doc["recorded_at"] = _dt(doc["recorded_at"])
+    await db.seo_ranks.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.post("/seo/keywords/{keyword_id}/auto-rank")
+async def auto_rank(keyword_id: str, user: dict = Depends(get_current_user)):
+    k = await db.seo_keywords.find_one({"id": keyword_id}, {"_id": 0})
+    if not k:
+        raise HTTPException(status_code=404, detail="Not found")
+    if user["role"] != "admin" and k["client_id"] != user.get("client_id"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    rank, is_real = google_search_rank(k["keyword"], k.get("domain", ""))
+    if not is_real:
+        raise HTTPException(status_code=400, detail="Google Programmable Search key not configured")
+    r = SeoRank(client_id=k["client_id"], keyword_id=keyword_id, rank=rank or 0, note="auto", source="google_cse")
+    doc = r.model_dump()
+    doc["recorded_at"] = _dt(doc["recorded_at"])
+    await db.seo_ranks.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/seo/ranks")
+async def list_seo_ranks(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    return await db.seo_ranks.find({"client_id": cid}, {"_id": 0}).sort("recorded_at", -1).to_list(1000)
+
+
+# ====================================================
+# Recommendations (keywords + 6-month plan)
+# ====================================================
+class KeywordRecIn(BaseModel):
+    seed_text: str = ""
+    geography: str = "India"
+
+
+@api.post("/recommendations/keywords")
+async def recommend_keywords(payload: KeywordRecIn, client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    seed = payload.seed_text.strip()
+    if not seed:
+        # build seed from latest 20 posts
+        posts = await db.posts.find({"client_id": cid}, {"_id": 0, "title": 1, "snippet": 1}).sort("posted_at", -1).to_list(20)
+        seed = "\n".join(f"- {p.get('title') or p.get('snippet','')[:120]}" for p in posts) or "general digital marketing brand authority"
+    prompt = (
+        f"Suggest exactly 20 long-tail keywords, low difficulty, {payload.geography}-focused, "
+        "semantically close to the content/topics below. Return ONLY a numbered list, no extra text.\n\n"
+        f"{seed}"
+    )
+    text = await ask_engine(
+        "gpt-5.2",
+        "You are an SEO strategist. Be concise and specific.",
+        prompt,
+        session_id=f"kw-{cid}",
+    )
+    rec = Recommendation(client_id=cid, kind="keywords", payload=text)
+    doc = rec.model_dump()
+    doc["created_at"] = _dt(doc["created_at"])
+    await db.recommendations.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.post("/recommendations/plan")
+async def recommend_plan(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    channels = await db.channels.find({"client_id": cid}, {"_id": 0}).to_list(50)
+    client = await db.clients.find_one({"id": cid}, {"_id": 0})
+    channels_summary = ", ".join(f"{c['platform']} ({c.get('handle','')})" for c in channels) or "no channels yet"
+    company = (client or {}).get("company") or (client or {}).get("name", "the brand")
+    prompt = (
+        f"Build a realistic 6-month content + outreach plan for {company}. "
+        f"Active channels: {channels_summary}. "
+        "For each month, list: (a) primary theme, (b) 4 content drops with channel + format, "
+        "(c) 2 outreach moves, (d) one KPI to watch. "
+        "Plain text, month-by-month headings, no markdown asterisks."
+    )
+    text = await ask_engine(
+        "gemini-3-flash",
+        "You are a brand strategist for B2B/India-focused brands.",
+        prompt,
+        session_id=f"plan-{cid}",
+    )
+    rec = Recommendation(client_id=cid, kind="plan", payload=text)
+    doc = rec.model_dump()
+    doc["created_at"] = _dt(doc["created_at"])
+    await db.recommendations.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/recommendations")
+async def list_recommendations(client_id: Optional[str] = None, kind: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    q: dict = {"client_id": cid}
+    if kind:
+        q["kind"] = kind
+    return await db.recommendations.find(q, {"_id": 0}).sort("created_at", -1).to_list(100)
+
+
+# ====================================================
+# Dashboard summary
+# ====================================================
+@api.get("/dashboard/summary")
+async def dashboard_summary(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    posts = await db.posts.find({"client_id": cid}, {"_id": 0}).to_list(1000)
+    channels = await db.channels.find({"client_id": cid}, {"_id": 0}).to_list(100)
+    now = datetime.now(timezone.utc)
+    this_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    prev_month_end = this_month_start
+    prev_month_start = (prev_month_end.replace(day=1) - timedelta_days(1)).replace(day=1)
+
+    def _parse_dt(value) -> datetime:
+        if isinstance(value, datetime):
+            return value
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except Exception:
+            return now
+
+    this_month_posts = [p for p in posts if _parse_dt(p["posted_at"]) >= this_month_start]
+    last_month_posts = [p for p in posts if prev_month_start <= _parse_dt(p["posted_at"]) < prev_month_end]
+
+    def _engagement(items: list[dict]) -> int:
+        return sum(p.get("likes", 0) + p.get("comments", 0) + p.get("shares", 0) for p in items)
+
+    this_eng = _engagement(this_month_posts)
+    last_eng = _engagement(last_month_posts)
+    delta_pct = 0 if last_eng == 0 else round((this_eng - last_eng) * 100.0 / max(last_eng, 1), 1)
+
+    # Consistency: posts per week over last 4 weeks
+    cutoff = now - timedelta_days(28)
+    recent = [p for p in posts if _parse_dt(p["posted_at"]) >= cutoff]
+    posts_per_week = len(recent) / 4.0
+    consistency = min(100, int(posts_per_week * 20))  # 5 posts/wk = 100
+
+    by_platform = {}
+    for ch in channels:
+        plt = ch["platform"]
+        plt_posts = [p for p in posts if p["platform"] == plt]
+        by_platform[plt] = {
+            "channel": ch,
+            "post_count": len(plt_posts),
+            "engagement": _engagement(plt_posts),
+            "last_sync": ch.get("last_sync"),
+            "status": ch.get("status", "pending"),
+        }
+
+    top = sorted(posts, key=lambda p: p.get("likes", 0) + p.get("comments", 0) + p.get("shares", 0), reverse=True)
+    return {
+        "this_month": {"posts": len(this_month_posts), "engagement": this_eng},
+        "last_month": {"posts": len(last_month_posts), "engagement": last_eng},
+        "delta_pct": delta_pct,
+        "consistency_score": consistency,
+        "by_platform": by_platform,
+        "top_post": top[0] if top else None,
+        "total_posts": len(posts),
+        "channels_count": len(channels),
+    }
+
+
+# small helper to avoid importing timedelta inline above
+def timedelta_days(n: int):
+    from datetime import timedelta
+    return timedelta(days=n)
+
+
+# ====================================================
+app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
