@@ -115,17 +115,34 @@ export default function Competitors() {
                         Track a rival
                     </h3>
                     <label className="pg-label">Platform</label>
-                    <select
-                        value={form.platform}
-                        onChange={(e) => setForm({ ...form, platform: e.target.value })}
-                        className="pg-input mt-2 mb-4"
-                    >
-                        {PLATFORMS.map((p) => (
-                            <option key={p.key} value={p.key}>
-                                {p.label}
-                            </option>
-                        ))}
-                    </select>
+                    <Select value={form.platform} onValueChange={(v) => setForm({ ...form, platform: v })}>
+                        <SelectTrigger className="mt-2 mb-4 h-11 rounded-none bg-[#0a0a0a] border-[#a0a0ab]/30 hover:border-[#fafafa] text-[#fafafa] focus:ring-1 focus:ring-[#e6192b]">
+                            <SelectValue>
+                                <span className="inline-flex items-center gap-2">
+                                    <PlatformIcon platform={form.platform} size={16} />
+                                    <span className="font-mono uppercase tracking-widest text-xs">
+                                        {platformMeta(form.platform).label}
+                                    </span>
+                                </span>
+                            </SelectValue>
+                        </SelectTrigger>
+                        <SelectContent className="bg-[#0a0a0a] border-[#a0a0ab]/30 rounded-none text-[#fafafa]">
+                            {PLATFORM_KEYS.map((k) => (
+                                <SelectItem
+                                    key={k}
+                                    value={k}
+                                    className="rounded-none focus:bg-[#fafafa]/10 focus:text-[#fafafa]"
+                                >
+                                    <span className="inline-flex items-center gap-3">
+                                        <PlatformIcon platform={k} size={16} />
+                                        <span className="font-mono uppercase tracking-widest text-xs">
+                                            {PLATFORM_META[k].label}
+                                        </span>
+                                    </span>
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
                     <label className="pg-label">Handle</label>
                     <input
                         value={form.handle}
