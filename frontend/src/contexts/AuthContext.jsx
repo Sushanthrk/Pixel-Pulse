@@ -15,7 +15,23 @@ export function AuthProvider({ children }) {
                 setScopedClientId(data.client_id);
             } else {
                 const stored = localStorage.getItem("pg_admin_workspace");
-                if (stored) setScopedClientId(stored);
+                if (stored) {
+                    setScopedClientId(stored);
+                } else {
+                    // auto-pick the first client (typically Pixelgrok) so the admin
+                    // lands on a populated dashboard instead of an empty notice.
+                    try {
+                        const r = await api.get("/admin/clients");
+                        if (r.data && r.data.length > 0) {
+                            const pixelgrok = r.data.find(
+                                (c) => c.name?.toLowerCase() === "pixelgrok",
+                            );
+                            const pick = (pixelgrok || r.data[0]).id;
+                            setScopedClientId(pick);
+                            localStorage.setItem("pg_admin_workspace", pick);
+                        }
+                    } catch (_) {}
+                }
             }
             return data;
         } catch (e) {

@@ -192,7 +192,7 @@ body {
 
 .pg-input {
     width: 100%;
-    background: transparent;
+    background: #0a0a0a;
     border: 1px solid var(--border-default);
     border-radius: 0;
     color: var(--text-primary);
@@ -209,6 +209,19 @@ body {
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 1px var(--accent);
+}
+
+select.pg-input {
+    appearance: none;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path fill='%23a0a0ab' d='M2 4l4 4 4-4z'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 0.8rem center;
+    padding-right: 2.2rem;
+    cursor: pointer;
+}
+select.pg-input option {
+    background-color: #0a0a0a;
+    color: var(--text-primary);
 }
 
 .pg-label {

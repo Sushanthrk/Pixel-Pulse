@@ -1,8 +1,17 @@
 import { useEffect, useState } from "react";
-import { api, formatApiError, PLATFORMS, platformLabel } from "../lib/api";
+import { api, formatApiError } from "../lib/api";
 import { useClientQuery } from "../contexts/AuthContext";
 import { RecDot, HairlineDivider, Brackets, StatusBadge } from "../components/Pieces";
 import { toast } from "sonner";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "../components/ui/select";
+import PlatformIcon from "../components/PlatformIcon";
+import { PLATFORM_META, PLATFORM_KEYS, platformMeta } from "../lib/platforms";
 
 export default function Channels() {
     const cq = useClientQuery();
@@ -59,7 +68,7 @@ export default function Channels() {
         }
     };
 
-    const currentPlatform = PLATFORMS.find((p) => p.key === form.platform);
+    const currentPlatform = platformMeta(form.platform);
 
     return (
         <div data-testid="channels-page">
@@ -88,18 +97,49 @@ export default function Channels() {
                         Wire a platform
                     </h3>
                     <label className="pg-label">Platform</label>
-                    <select
+                    <Select
                         value={form.platform}
-                        onChange={(e) => setForm({ ...form, platform: e.target.value })}
-                        className="pg-input mt-2 mb-4"
-                        data-testid="new-channel-platform"
+                        onValueChange={(v) => setForm({ ...form, platform: v })}
                     >
-                        {PLATFORMS.map((p) => (
-                            <option key={p.key} value={p.key}>
-                                {p.label} {p.mode === "auto" ? "· Auto" : "· Manual"}
-                            </option>
-                        ))}
-                    </select>
+                        <SelectTrigger
+                            className="mt-2 mb-4 h-11 rounded-none bg-[#0a0a0a] border-[#a0a0ab]/30 hover:border-[#fafafa] text-[#fafafa] focus:ring-1 focus:ring-[#e6192b] focus:ring-offset-0"
+                            data-testid="new-channel-platform"
+                        >
+                            <SelectValue placeholder="Pick a platform">
+                                <span className="inline-flex items-center gap-2">
+                                    <PlatformIcon platform={form.platform} size={16} />
+                                    <span className="font-mono uppercase tracking-widest text-xs">
+                                        {currentPlatform.label}
+                                    </span>
+                                </span>
+                            </SelectValue>
+                        </SelectTrigger>
+                        <SelectContent className="bg-[#0a0a0a] border-[#a0a0ab]/30 rounded-none text-[#fafafa]">
+                            {PLATFORM_KEYS.map((k) => {
+                                const m = PLATFORM_META[k];
+                                return (
+                                    <SelectItem
+                                        key={k}
+                                        value={k}
+                                        className="rounded-none focus:bg-[#fafafa]/10 focus:text-[#fafafa]"
+                                    >
+                                        <span className="inline-flex items-center gap-3">
+                                            <PlatformIcon platform={k} size={16} />
+                                            <span className="font-mono uppercase tracking-widest text-xs">
+                                                {m.label}
+                                            </span>
+                                            <span
+                                                className="ml-2 text-[9px] uppercase tracking-widest opacity-70"
+                                                style={{ color: m.mode === "auto" ? "#62e296" : "#a0a0ab" }}
+                                            >
+                                                {m.mode === "auto" ? "Auto" : "Manual"}
+                                            </span>
+                                        </span>
+                                    </SelectItem>
+                                );
+                            })}
+                        </SelectContent>
+                    </Select>
 
                     <label className="pg-label">
                         {form.platform === "reddit"
@@ -124,7 +164,7 @@ export default function Channels() {
                     />
 
                     <div className="text-[10px] font-mono text-[#a0a0ab] mb-4 uppercase tracking-widest">
-                        {currentPlatform?.mode === "auto"
+                        {currentPlatform.mode === "auto"
                             ? "FREE auto-sync available"
                             : "Manual entry only — paste post URL + numbers"}
                     </div>
@@ -139,20 +179,32 @@ export default function Channels() {
                             No channels yet — add one to the left.
                         </div>
                     )}
-                    {channels.map((c) => (
+                    {channels.map((c) => {
+                        const meta = platformMeta(c.platform);
+                        return (
                         <div
                             key={c.id}
-                            className="pg-card p-5"
+                            className="pg-card p-5 relative overflow-hidden"
                             data-testid={`channel-card-${c.id}`}
+                            style={{ boxShadow: `inset 3px 0 0 0 ${meta.color}` }}
                         >
                             <Brackets />
-                            <div className="flex items-start justify-between mb-3">
-                                <div>
-                                    <div className="font-display uppercase tracking-tight font-bold text-lg">
-                                        {platformLabel(c.platform)}
-                                    </div>
-                                    <div className="text-xs font-mono text-[#a0a0ab] uppercase tracking-widest mt-1 break-all">
-                                        {c.handle || c.url}
+                            <div
+                                className="absolute top-0 right-0 w-24 h-24 opacity-[0.07] pointer-events-none"
+                                style={{
+                                    background: `radial-gradient(circle at top right, ${meta.color}, transparent 70%)`,
+                                }}
+                            />
+                            <div className="flex items-start justify-between mb-3 relative">
+                                <div className="flex items-center gap-3">
+                                    <PlatformIcon platform={c.platform} size={28} />
+                                    <div>
+                                        <div className="font-display uppercase tracking-tight font-bold text-lg leading-none">
+                                            {meta.label}
+                                        </div>
+                                        <div className="text-xs font-mono text-[#a0a0ab] uppercase tracking-widest mt-1 break-all">
+                                            {c.handle || c.url}
+                                        </div>
                                     </div>
                                 </div>
                                 <StatusBadge status={c.status} sync_mode={c.sync_mode} />
@@ -180,7 +232,7 @@ export default function Channels() {
                                 </button>
                             </div>
                         </div>
-                    ))}
+                    );})}
                 </div>
             </div>
         </div>

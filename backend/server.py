@@ -96,6 +96,51 @@ async def _startup() -> None:
                     {"$set": {"password_hash": hash_password(admin_password)}},
                 )
 
+    # Seed Pixelgrok client workspace (their own brand) + a starter channel set
+    # so they can analyse pixelgrok.com from day one.
+    pg_email = "pulse@pixelgrok.com"
+    pg_existing = await db.clients.find_one({"email": pg_email})
+    if pg_existing is None:
+        pg_client = ClientAccount(
+            name="Pixelgrok",
+            company="Pixelgrok Media",
+            email=pg_email,
+        )
+        cdoc = pg_client.model_dump()
+        cdoc["created_at"] = cdoc["created_at"].isoformat()
+        await db.clients.insert_one(cdoc)
+        pg_user = User(
+            email=pg_email,
+            name="Pixelgrok",
+            role="client",
+            client_id=pg_client.id,
+        )
+        udoc = pg_user.model_dump()
+        udoc["created_at"] = udoc["created_at"].isoformat()
+        udoc["password_hash"] = hash_password("Pulse@2026")
+        await db.users.insert_one(udoc)
+        # starter channels — handles can be edited by admin/client later
+        starter_channels = [
+            ("blog", "pixelgrok.com", "https://pixelgrok.com/feed"),
+            ("youtube", "@pixelgrok", ""),
+            ("linkedin_company", "pixelgrok-media", "https://www.linkedin.com/company/pixelgrok-media/"),
+            ("instagram", "pixelgrok", "https://instagram.com/pixelgrok"),
+            ("twitter", "pixelgrok", "https://x.com/pixelgrok"),
+        ]
+        for platform, handle, url in starter_channels:
+            ch = Channel(
+                client_id=pg_client.id,
+                platform=platform,
+                handle=handle,
+                url=url,
+                sync_mode="auto" if platform in AUTO_PLATFORMS else "manual",
+                status="pending",
+            )
+            doc = ch.model_dump()
+            doc["created_at"] = doc["created_at"].isoformat()
+            await db.channels.insert_one(doc)
+        log.info("Seeded Pixelgrok client workspace (%s) with 5 starter channels", pg_client.id)
+
     # Write test credentials
     try:
         creds_dir = Path("/app/memory")

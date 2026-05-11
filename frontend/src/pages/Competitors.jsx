@@ -1,9 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, formatApiError, PLATFORMS, platformLabel } from "../lib/api";
+import { api, formatApiError } from "../lib/api";
 import { useClientQuery } from "../contexts/AuthContext";
 import { RecDot, HairlineDivider, Brackets } from "../components/Pieces";
 import { toast } from "sonner";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "../components/ui/select";
+import PlatformIcon from "../components/PlatformIcon";
+import { PLATFORM_META, PLATFORM_KEYS, platformMeta } from "../lib/platforms";
 
 const DONUT_COLORS = ["#e6192b", "#fafafa", "#a0a0ab", "#4a0b10", "#222222"];
 
@@ -141,21 +150,31 @@ export default function Competitors() {
                             No competitors yet. Add up to 5 per platform.
                         </div>
                     )}
-                    {competitors.map((c) => (
+                    {competitors.map((c) => {
+                        const meta = platformMeta(c.platform);
+                        return (
                         <button
                             key={c.id}
                             onClick={() => setSelected(c.id)}
-                            className={`pg-card p-4 text-left ${selected === c.id ? "!border-[#e6192b]" : ""}`}
+                            className={`pg-card p-4 text-left relative overflow-hidden ${selected === c.id ? "!border-[#e6192b]" : ""}`}
                             data-testid={`competitor-${c.id}`}
+                            style={{ boxShadow: `inset 3px 0 0 0 ${meta.color}` }}
                         >
                             <Brackets />
-                            <div className="flex justify-between items-start">
-                                <div>
-                                    <div className="font-display uppercase tracking-tight font-bold">
-                                        {c.handle}
-                                    </div>
-                                    <div className="text-[10px] font-mono text-[#a0a0ab] uppercase tracking-widest mt-1">
-                                        {platformLabel(c.platform)}
+                            <div
+                                className="absolute top-0 right-0 w-20 h-20 opacity-[0.08] pointer-events-none"
+                                style={{ background: `radial-gradient(circle at top right, ${meta.color}, transparent 70%)` }}
+                            />
+                            <div className="flex justify-between items-start relative">
+                                <div className="flex items-center gap-3">
+                                    <PlatformIcon platform={c.platform} size={26} />
+                                    <div>
+                                        <div className="font-display uppercase tracking-tight font-bold">
+                                            {c.handle}
+                                        </div>
+                                        <div className="text-[10px] font-mono text-[#a0a0ab] uppercase tracking-widest mt-1">
+                                            {meta.label}
+                                        </div>
                                     </div>
                                 </div>
                                 <span className="font-mono text-[10px] text-[#a0a0ab]">
@@ -163,7 +182,7 @@ export default function Competitors() {
                                 </span>
                             </div>
                         </button>
-                    ))}
+                    );})}
                 </div>
             </div>
 

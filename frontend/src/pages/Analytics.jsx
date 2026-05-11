@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, formatApiError, platformLabel } from "../lib/api";
+import { api, formatApiError } from "../lib/api";
 import { useClientQuery } from "../contexts/AuthContext";
 import { RecDot, HairlineDivider, Brackets } from "../components/Pieces";
 import { toast } from "sonner";
@@ -11,7 +11,10 @@ import {
     YAxis,
     Tooltip,
     CartesianGrid,
+    Cell,
 } from "recharts";
+import PlatformIcon from "../components/PlatformIcon";
+import { platformMeta } from "../lib/platforms";
 
 export default function Analytics() {
     const cq = useClientQuery();
@@ -150,7 +153,11 @@ export default function Analytics() {
                                     fontSize: 11,
                                 }}
                             />
-                            <Bar dataKey="posts" fill="#e6192b" />
+                            <Bar dataKey="posts" radius={[2, 2, 0, 0]}>
+                                {frequency.map((_, i) => (
+                                    <Cell key={i} fill={i === frequency.length - 1 ? "#ff2a3d" : "#e6192b"} />
+                                ))}
+                            </Bar>
                         </BarChart>
                     </ResponsiveContainer>
                 </div>
@@ -201,8 +208,11 @@ export default function Analytics() {
                                     <td className="px-6 py-3 font-mono text-xs text-[#a0a0ab] tabular-nums">
                                         {new Date(p.posted_at).toISOString().slice(0, 10)}
                                     </td>
-                                    <td className="px-6 py-3 text-xs uppercase tracking-widest text-[#a0a0ab] font-mono">
-                                        {platformLabel(p.platform)}
+                    <td className="px-6 py-3 text-xs uppercase tracking-widest text-[#a0a0ab] font-mono">
+                                        <span className="inline-flex items-center gap-2">
+                                            <PlatformIcon platform={p.platform} size={14} />
+                                            {platformMeta(p.platform).label}
+                                        </span>
                                     </td>
                                     <td className="px-6 py-3 max-w-sm">
                                         <a
@@ -265,13 +275,13 @@ export default function Analytics() {
                             required
                             value={form.channel_id}
                             onChange={(e) => setForm({ ...form, channel_id: e.target.value })}
-                            className="pg-input mt-2 mb-3"
+                            className="pg-input mt-2 mb-3 bg-[#0a0a0a]"
                             data-testid="manual-post-channel"
                         >
-                            <option value="">— pick a channel —</option>
+                            <option value="" style={{ background: "#0a0a0a" }}>— pick a channel —</option>
                             {channels.map((c) => (
-                                <option key={c.id} value={c.id}>
-                                    {platformLabel(c.platform)} · {c.handle || c.url}
+                                <option key={c.id} value={c.id} style={{ background: "#0a0a0a" }}>
+                                    {platformMeta(c.platform).label} · {c.handle || c.url}
                                 </option>
                             ))}
                         </select>

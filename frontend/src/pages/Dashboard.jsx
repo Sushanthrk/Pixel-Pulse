@@ -10,8 +10,12 @@ import {
     YAxis,
     Tooltip,
     CartesianGrid,
+    Area,
+    AreaChart,
 } from "recharts";
-import { platformLabel } from "../lib/api";
+import { platformMeta } from "../lib/platforms";
+import PlatformIcon from "../components/PlatformIcon";
+import AnimatedNumber from "../components/AnimatedNumber";
 
 export default function Dashboard() {
     const cq = useClientQuery();
@@ -57,16 +61,20 @@ export default function Dashboard() {
             <HairlineDivider className="mb-6" />
 
             <div className="grid grid-cols-1 md:grid-cols-4 gap-5 mb-10">
-                <Stat label="This month engagement" value={summary?.this_month?.engagement ?? 0} />
-                <Stat label="Last month engagement" value={summary?.last_month?.engagement ?? 0} />
+                <Stat label="This month engagement" value={summary?.this_month?.engagement ?? 0} stripe="#e6192b" />
+                <Stat label="Last month engagement" value={summary?.last_month?.engagement ?? 0} stripe="#a0a0ab" />
                 <Stat
                     label="MoM change"
-                    value={`${summary?.delta_pct ?? 0}%`}
+                    value={summary?.delta_pct ?? 0}
+                    suffix="%"
                     accent={(summary?.delta_pct ?? 0) >= 0 ? "up" : "down"}
+                    stripe={(summary?.delta_pct ?? 0) >= 0 ? "#62e296" : "#ff6b76"}
                 />
                 <Stat
                     label="Consistency score"
-                    value={`${summary?.consistency_score ?? 0}/100`}
+                    value={summary?.consistency_score ?? 0}
+                    suffix="/100"
+                    stripe="#f5c84b"
                 />
             </div>
 
@@ -81,7 +89,13 @@ export default function Dashboard() {
                     </h3>
                     <div className="h-64">
                         <ResponsiveContainer>
-                            <LineChart data={trendData}>
+                            <AreaChart data={trendData}>
+                                <defs>
+                                    <linearGradient id="engGrad" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="0%" stopColor="#e6192b" stopOpacity={0.45} />
+                                        <stop offset="100%" stopColor="#e6192b" stopOpacity={0} />
+                                    </linearGradient>
+                                </defs>
                                 <CartesianGrid stroke="rgba(160,160,171,0.1)" />
                                 <XAxis
                                     dataKey="day"
@@ -104,14 +118,14 @@ export default function Dashboard() {
                                         fontSize: 11,
                                     }}
                                 />
-                                <Line
+                                <Area
                                     type="monotone"
                                     dataKey="engagement"
                                     stroke="#e6192b"
                                     strokeWidth={2}
-                                    dot={false}
+                                    fill="url(#engGrad)"
                                 />
-                            </LineChart>
+                            </AreaChart>
                         </ResponsiveContainer>
                     </div>
                 </div>
@@ -126,8 +140,9 @@ export default function Dashboard() {
                     </h3>
                     {summary?.top_post ? (
                         <div>
-                            <div className="text-xs font-mono text-[#a0a0ab] uppercase tracking-widest mb-2">
-                                {platformLabel(summary.top_post.platform)}
+                            <div className="text-xs font-mono text-[#a0a0ab] uppercase tracking-widest mb-2 inline-flex items-center gap-2">
+                                <PlatformIcon platform={summary.top_post.platform} size={14} />
+                                {platformMeta(summary.top_post.platform).label}
                             </div>
                             <div className="font-display font-semibold text-lg mb-2 leading-tight">
                                 {summary.top_post.title || summary.top_post.snippet || "Untitled"}
@@ -170,12 +185,26 @@ export default function Dashboard() {
                     </div>
                 )}
                 {summary &&
-                    Object.entries(summary.by_platform || {}).map(([plt, info]) => (
-                        <div key={plt} className="pg-card p-5" data-testid={`health-${plt}`}>
+                    Object.entries(summary.by_platform || {}).map(([plt, info]) => {
+                        const meta = platformMeta(plt);
+                        return (
+                        <div
+                            key={plt}
+                            className="pg-card p-5 relative overflow-hidden"
+                            data-testid={`health-${plt}`}
+                            style={{ boxShadow: `inset 3px 0 0 0 ${meta.color}` }}
+                        >
                             <Brackets />
-                            <div className="flex items-center justify-between mb-3">
-                                <div className="font-display uppercase tracking-tight font-bold">
-                                    {platformLabel(plt)}
+                            <div
+                                className="absolute -top-8 -right-8 w-32 h-32 opacity-[0.12] pointer-events-none"
+                                style={{ background: `radial-gradient(circle, ${meta.color}, transparent 70%)` }}
+                            />
+                            <div className="flex items-center justify-between mb-4 relative">
+                                <div className="flex items-center gap-3">
+                                    <PlatformIcon platform={plt} size={28} />
+                                    <div className="font-display uppercase tracking-tight font-bold leading-none">
+                                        {meta.label}
+                                    </div>
                                 </div>
                                 <StatusBadge
                                     status={info.status}
@@ -185,14 +214,14 @@ export default function Dashboard() {
                             <div className="grid grid-cols-2 gap-3 text-xs font-mono uppercase tracking-widest text-[#a0a0ab]">
                                 <div>
                                     <div className="text-[#a0a0ab]">Posts</div>
-                                    <div className="font-display text-xl text-[#fafafa] mt-1">
-                                        {info.post_count}
+                                    <div className="font-display text-2xl text-[#fafafa] mt-1">
+                                        <AnimatedNumber value={info.post_count} />
                                     </div>
                                 </div>
                                 <div>
                                     <div className="text-[#a0a0ab]">Engagement</div>
-                                    <div className="font-display text-xl text-[#fafafa] mt-1">
-                                        {info.engagement}
+                                    <div className="font-display text-2xl mt-1" style={{ color: meta.color }}>
+                                        <AnimatedNumber value={info.engagement} />
                                     </div>
                                 </div>
                             </div>
@@ -200,20 +229,28 @@ export default function Dashboard() {
                                 Last sync: {info.last_sync ? new Date(info.last_sync).toLocaleString() : "never"}
                             </div>
                         </div>
-                    ))}
+                    );})}
             </div>
         </div>
     );
 }
 
-function Stat({ label, value, accent }) {
-    const color = accent === "down" ? "text-[#ff6b76]" : accent === "up" ? "text-[#62e296]" : "text-[#fafafa]";
+function Stat({ label, value, suffix = "", prefix = "", accent, stripe = "#e6192b" }) {
+    const color =
+        accent === "down" ? "text-[#ff6b76]" : accent === "up" ? "text-[#62e296]" : "text-[#fafafa]";
     return (
-        <div className="pg-card p-5">
+        <div
+            className="pg-card p-5 relative overflow-hidden"
+            style={{ boxShadow: `inset 3px 0 0 0 ${stripe}` }}
+        >
             <Brackets />
-            <div className="font-mono-tech text-[10px] text-[#a0a0ab] mb-2">{label}</div>
-            <div className={`font-display text-3xl uppercase font-bold ${color}`}>
-                {value}
+            <div
+                className="absolute -top-8 -right-8 w-28 h-28 opacity-[0.1] pointer-events-none"
+                style={{ background: `radial-gradient(circle, ${stripe}, transparent 70%)` }}
+            />
+            <div className="font-mono-tech text-[10px] text-[#a0a0ab] mb-2 relative">{label}</div>
+            <div className={`font-display text-3xl uppercase font-bold relative ${color}`}>
+                <AnimatedNumber value={value} prefix={prefix} suffix={suffix} />
             </div>
         </div>
     );
