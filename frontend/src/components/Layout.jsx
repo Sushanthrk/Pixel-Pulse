@@ -6,8 +6,7 @@ import { RecDot, Timecode, HairlineDivider } from "./Pieces";
 
 const CLIENT_NAV = [
     { to: "/dashboard", label: "Pulse" },
-    { to: "/channels", label: "Channels" },
-    { to: "/analytics", label: "Analytics" },
+    { to: "/channels", label: "Configure" },
     { to: "/competitors", label: "Competitors" },
     { to: "/geo", label: "Geo" },
     { to: "/sentiment", label: "Sentiment" },

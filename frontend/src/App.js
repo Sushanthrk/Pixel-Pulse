@@ -6,7 +6,6 @@ import Login from "@/pages/Login";
 import AdminClients from "@/pages/AdminClients";
 import Dashboard from "@/pages/Dashboard";
 import Channels from "@/pages/Channels";
-import Analytics from "@/pages/Analytics";
 import Competitors from "@/pages/Competitors";
 import Geo from "@/pages/Geo";
 import Seo from "@/pages/Seo";
@@ -72,10 +71,10 @@ function App() {
                         }
                     />
                     <Route
-                        path="/analytics"
+                        path="/configure"
                         element={
                             <Protected>
-                                <Analytics />
+                                <Channels />
                             </Protected>
                         }
                     />

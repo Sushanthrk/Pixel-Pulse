@@ -14,17 +14,20 @@ import PlatformIcon from "../components/PlatformIcon";
 import AnimatedNumber from "../components/AnimatedNumber";
 import InfoTip from "../components/InfoTip";
 import { PLATFORM_META, PLATFORM_KEYS, platformMeta } from "../lib/platforms";
-import {
-    BarChart,
-    Bar,
-    XAxis,
-    YAxis,
-    ResponsiveContainer,
-    Cell,
-    Tooltip as RTooltip,
-} from "recharts";
 
 const PRIORITY_COLOR = { High: "#ff6b76", Medium: "#f5c84b", Low: "#62e296" };
+const CARD_PALETTE = ["#e6192b", "#62e296", "#f5c84b", "#ff9a3c", "#4285f4", "#bd10e0"];
+
+// Map gap-area → concrete one-line action recommendation
+function gapAction(area) {
+    const a = (area || "").toLowerCase();
+    if (a.includes("ai")) return "Seed FAQ/listicle content on Reddit, Quora and Wikipedia for category queries.";
+    if (a.includes("cadence") || a.includes("posting")) return "Lock a 3-posts-per-week cadence (1 reel · 1 carousel · 1 longform).";
+    if (a.includes("engagement")) return "Reply to every comment in <2h for 14 days and publish 2 polls to spike reach.";
+    if (a.includes("sentiment")) return "Respond to every review (good or bad) within 48h and ship 2 customer case studies.";
+    if (a.includes("brand")) return "Tighten brand voice across all channels and publish a founder POV every week.";
+    return "Pick the largest gap above and run it as the focus for the next sprint.";
+}
 
 export default function Competitors() {
     const cq = useClientQuery();
@@ -100,26 +103,42 @@ export default function Competitors() {
         setRefreshing(false);
     };
 
-    const compareData = useMemo(() => {
+    // Build [You, comp1, comp2…] with colors assigned
+    const rows = useMemo(() => {
         if (!scores?.you) return [];
-        const rows = [
+        const out = [
             {
+                key: "you",
                 name: "You",
-                "Brand": scores.you.brand_score,
-                "AI": scores.you.ai_visibility,
-                "Sentiment": scores.you.sentiment,
+                is_you: true,
+                brand: scores.you.brand_score ?? 0,
+                ai: scores.you.ai_visibility ?? 0,
+                sentiment: scores.you.sentiment ?? 0,
+                color: "#e6192b",
+                platform: null,
+                handle: "Your brand",
+                summary: scores.you.summary,
             },
         ];
-        (scores.competitors || []).forEach((c) => {
-            rows.push({
+        (scores.competitors || []).forEach((c, i) => {
+            out.push({
+                key: c.id,
                 name: c.handle,
-                "Brand": c.brand_score,
-                "AI": c.ai_visibility,
-                "Sentiment": c.sentiment,
+                is_you: false,
+                brand: c.brand_score ?? 0,
+                ai: c.ai_visibility ?? 0,
+                sentiment: c.sentiment ?? 0,
+                color: CARD_PALETTE[(i + 1) % CARD_PALETTE.length],
+                platform: c.platform,
+                handle: c.handle,
+                summary: c.summary,
+                _id: c.id,
             });
         });
-        return rows;
+        return out;
     }, [scores]);
+
+    const maxBrand = Math.max(100, ...rows.map((r) => r.brand));
 
     return (
         <div data-testid="competitors-page">
@@ -205,296 +224,321 @@ export default function Competitors() {
                 </div>
             </form>
 
-            {/* Brand score comparison */}
-            {scores?.you && (scores.competitors || []).length > 0 && (
-                <div className="pg-card p-6 mb-8" data-testid="comparison-chart">
-                    <Brackets />
-                    <div className="flex items-center justify-between mb-4">
-                        <div>
-                            <div className="font-mono-tech text-[10px] text-[#a0a0ab] mb-1 inline-flex items-center gap-2">
-                                // brand score comparison
-                                <InfoTip>
-                                    <strong>Brand Score</strong> blends channels live, cadence and
-                                    AI visibility into a single 0-100 number. We compute the same
-                                    score for each competitor so the comparison is apples-to-apples.
-                                </InfoTip>
-                            </div>
-                            <h3 className="font-display uppercase tracking-tight font-bold text-xl">
-                                How you stack up
-                            </h3>
-                        </div>
-                        <span className="font-mono text-[10px] text-[#a0a0ab] uppercase tracking-widest">
-                            Updated{" "}
-                            {scores.updated_at ? new Date(scores.updated_at).toLocaleString() : "—"}
-                        </span>
-                    </div>
-                    <div className="h-72">
-                        <ResponsiveContainer>
-                            <BarChart data={compareData} margin={{ top: 10, right: 20, bottom: 10, left: 0 }}>
-                                <XAxis dataKey="name" stroke="#a0a0ab" fontSize={11} tickLine={false} interval={0} />
-                                <YAxis stroke="#a0a0ab" fontSize={11} tickLine={false} axisLine={false} domain={[0, 100]} />
-                                <RTooltip
-                                    contentStyle={{
-                                        background: "#050505",
-                                        border: "1px solid rgba(160,160,171,0.2)",
-                                        borderRadius: 0,
-                                        fontFamily: "monospace",
-                                        fontSize: 11,
-                                    }}
-                                />
-                                <Bar dataKey="Brand" radius={[2, 2, 0, 0]}>
-                                    {compareData.map((row, i) => (
-                                        <Cell key={i} fill={row.name === "You" ? "#e6192b" : "#a0a0ab"} />
-                                    ))}
-                                </Bar>
-                                <Bar dataKey="AI" radius={[2, 2, 0, 0]}>
-                                    {compareData.map((row, i) => (
-                                        <Cell key={i} fill={row.name === "You" ? "#62e296" : "#3a5a45"} />
-                                    ))}
-                                </Bar>
-                                <Bar dataKey="Sentiment" radius={[2, 2, 0, 0]}>
-                                    {compareData.map((row, i) => (
-                                        <Cell key={i} fill={row.name === "You" ? "#f5c84b" : "#5a4d28"} />
-                                    ))}
-                                </Bar>
-                            </BarChart>
-                        </ResponsiveContainer>
-                    </div>
-                    <div className="flex flex-wrap gap-4 mt-3 text-[10px] font-mono uppercase tracking-widest">
-                        <span className="inline-flex items-center gap-2"><i className="w-2 h-2 inline-block" style={{ background: "#e6192b" }} />Brand</span>
-                        <span className="inline-flex items-center gap-2"><i className="w-2 h-2 inline-block" style={{ background: "#62e296" }} />AI Visibility</span>
-                        <span className="inline-flex items-center gap-2"><i className="w-2 h-2 inline-block" style={{ background: "#f5c84b" }} />Sentiment</span>
-                    </div>
-                </div>
-            )}
-
-            {/* Gap analysis */}
-            {(scores?.biggest_gaps || []).length > 0 && (
-                <div className="pg-card p-6 mb-10" data-testid="gap-analysis">
-                    <Brackets />
-                    <div className="font-mono-tech text-[10px] text-[#a0a0ab] mb-1 inline-flex items-center gap-2">
-                        // biggest opportunity gaps
-                        <InfoTip>
-                            For each metric we compare your number to the best competitor.
-                            <strong> Priority</strong> reflects how big the gap is — close the High
-                            ones first.
-                        </InfoTip>
-                    </div>
-                    <h3 className="font-display uppercase tracking-tight font-bold text-xl mb-4">
-                        Where you can win
-                    </h3>
-                    <div className="space-y-3">
-                        {scores.biggest_gaps.map((g, i) => (
-                            <div
-                                key={i}
-                                className="grid grid-cols-12 gap-4 items-center border border-[#a0a0ab]/15 p-4 hover:border-[#fafafa]/40 transition-colors"
-                            >
-                                <div className="col-span-3">
-                                    <div className="font-display uppercase tracking-tight font-bold text-sm">
-                                        {g.area}
-                                    </div>
-                                    <div className="text-[10px] font-mono text-[#a0a0ab] uppercase tracking-widest mt-1">
-                                        You {g.you} · Best {g.best}
-                                    </div>
-                                </div>
-                                <div className="col-span-7">
-                                    <div className="text-sm text-[#fafafa] leading-relaxed">{g.rationale}</div>
-                                </div>
-                                <div className="col-span-2 flex justify-end">
-                                    <PriorityChip priority={g.priority} />
-                                </div>
-                            </div>
-                        ))}
-                    </div>
+            {/* Empty state when no scores yet */}
+            {rows.length === 0 && (
+                <div className="pg-card p-10 text-center" data-testid="no-scores">
+                    <div className="font-mono-tech text-[10px] text-[#a0a0ab] mb-3">// no analysis yet</div>
+                    <h2 className="font-display uppercase tracking-tight font-bold text-2xl mb-3">
+                        Add competitors, then refresh
+                    </h2>
+                    <p className="text-[#a0a0ab] text-sm max-w-md mx-auto">
+                        Add 3–5 competitors above (you can mix platforms). Then hit{" "}
+                        <span className="text-[#e6192b]">↻ Refresh intelligence</span> — we'll score
+                        each one and surface the biggest gaps to close.
+                    </p>
                 </div>
             )}
 
             {/* Per-competitor dashlets */}
-            <div className="flex items-end justify-between mb-4">
-                <div>
-                    <div className="font-mono-tech text-[10px] text-[#a0a0ab] mb-1">
-                        // individual competitor cards
+            {rows.length > 0 && (
+                <>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 mb-10">
+                        {rows.map((r) => (
+                            <CompetitorCard
+                                key={r.key}
+                                row={r}
+                                onSync={r._id ? () => syncOne(r._id) : null}
+                                onRemove={r._id ? () => remove(r._id) : null}
+                                busy={r._id ? busy === `sync-${r._id}` : false}
+                            />
+                        ))}
                     </div>
-                    <h2 className="font-display uppercase tracking-tight font-bold text-2xl">
-                        Per-competitor insight
-                    </h2>
-                </div>
-                <span className="font-mono text-[10px] text-[#a0a0ab] uppercase tracking-widest">
-                    {(scores?.competitors || []).length} tracked
-                </span>
-            </div>
 
-            {(!scores?.competitors || scores.competitors.length === 0) && (
-                <div className="pg-card p-8 text-[#a0a0ab] text-sm font-mono text-center" data-testid="no-competitors">
-                    Add competitors above and hit{" "}
-                    <span className="text-[#e6192b]">Refresh intelligence</span> to see their score
-                    cards.
-                </div>
-            )}
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                {(scores?.competitors || []).map((c) => (
-                    <CompetitorCard
-                        key={c.id}
-                        comp={c}
-                        you={scores.you}
-                        onSync={() => syncOne(c.id)}
-                        onRemove={() => remove(c.id)}
-                        busy={busy === `sync-${c.id}`}
-                    />
-                ))}
-            </div>
-
-            {/* Manual roster (raw add list, for sync/manual snapshot) */}
-            {competitors.length > 0 && (scores?.competitors || []).length === 0 && (
-                <div className="mt-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {competitors.map((c) => {
-                        const meta = platformMeta(c.platform);
-                        return (
-                            <div
-                                key={c.id}
-                                className="pg-card p-4"
-                                style={{ boxShadow: `inset 3px 0 0 0 ${meta.color}` }}
-                            >
-                                <Brackets />
-                                <div className="flex items-center gap-3 mb-3">
-                                    <PlatformIcon platform={c.platform} size={22} />
-                                    <div>
-                                        <div className="font-display uppercase tracking-tight font-bold text-sm">
-                                            {c.handle}
-                                        </div>
-                                        <div className="text-[10px] font-mono text-[#a0a0ab] uppercase tracking-widest mt-1">
-                                            {meta.label}
-                                        </div>
+                    {/* Brand score comparison (horizontal bars) */}
+                    <div className="pg-card p-6 mb-8" data-testid="comparison-chart">
+                        <Brackets />
+                        <div className="font-mono-tech text-[10px] text-[#a0a0ab] mb-1 inline-flex items-center gap-2">
+                            // overall brand score · side by side
+                            <InfoTip>
+                                Brand Score blends channels live, cadence, AI visibility and an
+                                LLM perception pass into a single 0-100 number. Same formula is
+                                applied to every competitor so this comparison is apples-to-apples.
+                            </InfoTip>
+                        </div>
+                        <h3 className="font-display uppercase tracking-tight font-bold text-xl mb-5">
+                            Brand score comparison
+                        </h3>
+                        <div className="space-y-3">
+                            {rows.map((r) => (
+                                <div key={r.key} className="flex items-center gap-4">
+                                    <div className="w-32 truncate flex items-center gap-2">
+                                        <div
+                                            className="w-2.5 h-2.5 rounded-full"
+                                            style={{
+                                                background: r.color,
+                                                boxShadow: `0 0 6px ${r.color}`,
+                                            }}
+                                        />
+                                        <span className="font-display uppercase tracking-tight font-bold text-sm truncate">
+                                            {r.is_you ? "You" : r.name}
+                                        </span>
+                                    </div>
+                                    <div className="flex-1 h-3 bg-[#fafafa]/[0.05] relative">
+                                        <div
+                                            className="h-full transition-all duration-700"
+                                            style={{
+                                                width: `${Math.max(2, (r.brand / maxBrand) * 100)}%`,
+                                                background: `linear-gradient(90deg, ${r.color}, ${r.color}cc)`,
+                                                boxShadow: `0 0 10px ${r.color}88`,
+                                            }}
+                                        />
+                                    </div>
+                                    <div
+                                        className="w-12 text-right font-display font-black text-xl tabular-nums"
+                                        style={{ color: r.color }}
+                                    >
+                                        {r.brand}
                                     </div>
                                 </div>
-                                <div className="flex gap-2">
-                                    <button onClick={() => syncOne(c.id)} disabled={busy === `sync-${c.id}`} className="pg-btn-secondary !text-[10px] !px-3 !py-1.5">
-                                        {busy === `sync-${c.id}` ? "Syncing…" : "Sync"}
-                                    </button>
-                                    <button onClick={() => remove(c.id)} className="pg-btn-ghost">Remove</button>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Gap analysis */}
+                    {(scores?.biggest_gaps || []).length > 0 && (
+                        <div data-testid="gap-analysis">
+                            <div className="flex items-end justify-between mb-2">
+                                <div>
+                                    <div className="font-mono-tech text-[10px] text-[#a0a0ab] mb-1 inline-flex items-center gap-2">
+                                        // close these first
+                                        <InfoTip>
+                                            For each metric we compare your number to the best
+                                            competitor. Priority and the action recommendation
+                                            reflect how big the gap is and the highest-leverage way
+                                            to close it.
+                                        </InfoTip>
+                                    </div>
+                                    <h3 className="font-display uppercase tracking-tight font-bold text-2xl">
+                                        Competitor gap analysis
+                                    </h3>
+                                    <div className="text-xs text-[#a0a0ab] mt-1">
+                                        Biggest opportunity gaps to close
+                                    </div>
                                 </div>
                             </div>
-                        );
-                    })}
-                </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                                {scores.biggest_gaps.map((g, i) => (
+                                    <GapCard key={i} gap={g} />
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                </>
             )}
         </div>
     );
 }
 
-function CompetitorCard({ comp, you, onSync, onRemove, busy }) {
-    const meta = platformMeta(comp.platform);
-    const ai = comp.ai_visibility ?? 0;
-    const sent = comp.sentiment ?? 0;
-    const brand = comp.brand_score ?? 0;
-    const youAhead = (a, b) => (a > b ? "+" + (a - b) : a < b ? "-" + (b - a) : "·");
+function CompetitorCard({ row, onSync, onRemove, busy }) {
+    const { is_you, name, color, brand, ai, sentiment, platform, summary } = row;
     return (
         <div
             className="pg-card p-5 relative overflow-hidden"
-            style={{ boxShadow: `inset 3px 0 0 0 ${meta.color}` }}
-            data-testid={`competitor-card-${comp.id}`}
+            style={{ boxShadow: `inset 4px 0 0 0 ${color}` }}
+            data-testid={is_you ? "competitor-card-you" : `competitor-card-${row._id}`}
         >
             <Brackets />
             <div
-                className="absolute -top-10 -right-10 w-44 h-44 opacity-[0.08] pointer-events-none"
-                style={{ background: `radial-gradient(circle, ${meta.color}, transparent 70%)` }}
+                className="absolute -top-12 -right-12 w-44 h-44 opacity-[0.1] pointer-events-none"
+                style={{ background: `radial-gradient(circle, ${color}, transparent 70%)` }}
             />
-            <div className="flex items-start justify-between mb-4 relative">
-                <div className="flex items-center gap-3">
-                    <PlatformIcon platform={comp.platform} size={28} />
-                    <div>
-                        <div className="font-display uppercase tracking-tight font-bold text-base leading-none">
-                            {comp.handle}
-                        </div>
-                        <div className="text-[10px] font-mono text-[#a0a0ab] uppercase tracking-widest mt-1">
-                            {meta.label}
-                        </div>
+
+            {/* header */}
+            <div className="flex items-center justify-between mb-4 relative">
+                <div className="flex items-center gap-2 min-w-0">
+                    {platform && <PlatformIcon platform={platform} size={20} />}
+                    <div className="font-display uppercase tracking-tight font-bold text-base truncate">
+                        {name}
                     </div>
                 </div>
-                <div className="flex gap-2">
-                    <button onClick={onSync} disabled={busy} className="pg-btn-secondary !text-[10px] !px-3 !py-1.5">
-                        {busy ? "Syncing…" : "Sync"}
-                    </button>
-                    <button onClick={onRemove} className="pg-btn-ghost">×</button>
-                </div>
-            </div>
-
-            <div className="grid grid-cols-3 gap-3 mb-3 relative">
-                <MiniScore
-                    label="Brand"
-                    value={brand}
-                    color="#e6192b"
-                    diff={you ? youAhead(you.brand_score, brand) : null}
-                    tooltip="Composite 0-100 from channels live, posting cadence, AI visibility and an LLM perception pass."
-                />
-                <MiniScore
-                    label="AI Visibility"
-                    value={ai}
-                    color="#62e296"
-                    diff={you ? youAhead(you.ai_visibility, ai) : null}
-                    tooltip="% of tracked queries where this competitor surfaces in LLM answers."
-                />
-                <MiniScore
-                    label="Sentiment"
-                    value={sent}
-                    color="#f5c84b"
-                    diff={you ? youAhead(you.sentiment, sent) : null}
-                    tooltip="0-100 estimate of how positively the market speaks about this competitor."
-                />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 text-[10px] font-mono uppercase tracking-widest text-[#a0a0ab] mb-3 relative">
-                <div className="border border-[#a0a0ab]/15 p-2">
-                    <div>Posts / 30d</div>
-                    <div className="font-display text-lg text-[#fafafa] mt-1 normal-case tracking-tight">
-                        <AnimatedNumber value={comp.posts_30d || 0} />
+                {is_you ? (
+                    <span
+                        className="inline-flex items-center px-2 py-1 text-[10px] font-mono uppercase tracking-widest"
+                        style={{
+                            background: `${color}20`,
+                            color,
+                            border: `1px solid ${color}66`,
+                        }}
+                    >
+                        ● YOU
+                    </span>
+                ) : (
+                    <div className="flex gap-1">
+                        <button onClick={onSync} disabled={busy} className="pg-btn-ghost !text-[10px]">
+                            {busy ? "…" : "Sync"}
+                        </button>
+                        <button onClick={onRemove} className="pg-btn-ghost !text-[10px]">×</button>
                     </div>
-                </div>
-                <div className="border border-[#a0a0ab]/15 p-2">
-                    <div>Engagement</div>
-                    <div className="font-display text-lg mt-1 normal-case tracking-tight" style={{ color: meta.color }}>
-                        <AnimatedNumber value={comp.engagement_30d || 0} />
+                )}
+            </div>
+
+            {/* Big overall score ring */}
+            <div className="flex items-center gap-4 mb-5 relative">
+                <RadialGauge score={brand} color={color} />
+                <div>
+                    <div className="text-[10px] font-mono text-[#a0a0ab] uppercase tracking-widest mb-1">
+                        Overall score
+                    </div>
+                    <div className="text-[10px] font-mono text-[#a0a0ab] uppercase tracking-widest">
+                        out of 100
                     </div>
                 </div>
             </div>
 
-            {comp.summary && (
-                <div className="text-xs text-[#a0a0ab] leading-relaxed border-t border-[#a0a0ab]/10 pt-3 relative">
-                    {comp.summary}
+            {/* AI Visibility + Sentiment horizontal bars */}
+            <MetricBar
+                label="AI Visibility"
+                value={ai}
+                color={color}
+                tip="% of tracked queries where this brand surfaces in LLM answers (GPT-5.2, Claude, Gemini)."
+            />
+            <MetricBar
+                label="Sentiment"
+                value={sentiment}
+                color={color}
+                tip="0-100 view of how positively the market speaks about this brand."
+            />
+
+            {summary && (
+                <div className="text-xs text-[#a0a0ab] leading-relaxed border-t border-[#a0a0ab]/10 pt-3 mt-2 relative">
+                    {summary}
                 </div>
             )}
         </div>
     );
 }
 
-function MiniScore({ label, value, color, diff, tooltip }) {
+function RadialGauge({ score, color }) {
+    const size = 86;
+    const stroke = 8;
+    const r = (size - stroke) / 2;
+    const c = 2 * Math.PI * r;
+    const offset = c - (score / 100) * c;
     return (
-        <div className="border border-[#a0a0ab]/15 p-2.5">
-            <div className="text-[9px] font-mono text-[#a0a0ab] uppercase tracking-widest flex items-center gap-1 mb-1">
-                {label}
-                {tooltip && <InfoTip>{tooltip}</InfoTip>}
-            </div>
-            <div className="font-display text-2xl font-black leading-none" style={{ color }}>
-                <AnimatedNumber value={value} />
-            </div>
-            {diff && (
-                <div className="text-[9px] font-mono uppercase tracking-widest mt-1" style={{ color: diff.startsWith("+") ? "#62e296" : diff.startsWith("-") ? "#ff6b76" : "#a0a0ab" }}>
-                    YOU {diff}
+        <div className="relative shrink-0" style={{ width: size, height: size }}>
+            <svg width={size} height={size} className="-rotate-90">
+                <circle cx={size / 2} cy={size / 2} r={r} stroke="rgba(160,160,171,0.15)" strokeWidth={stroke} fill="none" />
+                <circle
+                    cx={size / 2}
+                    cy={size / 2}
+                    r={r}
+                    stroke={color}
+                    strokeWidth={stroke}
+                    strokeLinecap="round"
+                    fill="none"
+                    strokeDasharray={c}
+                    strokeDashoffset={offset}
+                    style={{
+                        transition: "stroke-dashoffset 800ms cubic-bezier(0.4,0,0.2,1)",
+                        filter: `drop-shadow(0 0 6px ${color}66)`,
+                    }}
+                />
+            </svg>
+            <div className="absolute inset-0 flex items-center justify-center">
+                <div
+                    className="font-display font-black text-2xl tabular-nums leading-none"
+                    style={{ color }}
+                >
+                    <AnimatedNumber value={score} />
                 </div>
-            )}
+            </div>
         </div>
     );
 }
 
-function PriorityChip({ priority }) {
-    const color = PRIORITY_COLOR[priority] || "#a0a0ab";
+function MetricBar({ label, value, color, tip }) {
     return (
-        <span
-            className="inline-flex items-center gap-1.5 px-3 py-1 border text-[10px] font-mono uppercase tracking-widest whitespace-nowrap"
-            style={{ borderColor: `${color}55`, color, background: `${color}10` }}
+        <div className="mb-3">
+            <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-widest mb-1.5">
+                <span className="inline-flex items-center gap-1 text-[#a0a0ab]">
+                    {label}
+                    {tip && <InfoTip>{tip}</InfoTip>}
+                </span>
+                <span className="font-display font-bold text-sm" style={{ color }}>
+                    {value}
+                </span>
+            </div>
+            <div className="h-1.5 bg-[#fafafa]/[0.05] relative overflow-hidden">
+                <div
+                    className="h-full transition-all duration-700"
+                    style={{
+                        width: `${Math.max(2, value)}%`,
+                        background: `linear-gradient(90deg, ${color}, ${color}aa)`,
+                        boxShadow: `0 0 8px ${color}66`,
+                    }}
+                />
+            </div>
+        </div>
+    );
+}
+
+function GapCard({ gap }) {
+    const priorityColor = PRIORITY_COLOR[gap.priority] || "#a0a0ab";
+    const action = gapAction(gap.area);
+    const ptsBehind = Math.max(0, Math.round((gap.best || 0) - (gap.you || 0)));
+    return (
+        <div
+            className="pg-card p-5 relative overflow-hidden"
+            style={{ boxShadow: `inset 4px 0 0 0 ${priorityColor}` }}
         >
-            ● {priority} priority
-        </span>
+            <Brackets />
+            <div className="flex items-start justify-between gap-3 mb-3 relative">
+                <h4 className="font-display uppercase tracking-tight font-bold text-base leading-tight">
+                    {gap.area}
+                </h4>
+                <span
+                    className="inline-flex items-center px-2 py-1 text-[10px] font-mono uppercase tracking-widest whitespace-nowrap"
+                    style={{
+                        background: "rgba(255,107,118,0.1)",
+                        color: "#ff6b76",
+                        border: "1px solid rgba(255,107,118,0.4)",
+                    }}
+                >
+                    -{ptsBehind} pts behind
+                </span>
+            </div>
+            <div className="text-xs font-mono text-[#a0a0ab] uppercase tracking-widest mb-3">
+                Leader scored <span className="text-[#fafafa] font-bold">{gap.best}</span>{" "}
+                <span>·</span> You scored <span className="text-[#fafafa] font-bold">{gap.you}</span>
+            </div>
+            <div className="text-sm text-[#fafafa] leading-relaxed mb-4">{gap.rationale}</div>
+
+            <div
+                className="border p-3 mb-3"
+                style={{
+                    borderColor: "rgba(98,226,150,0.35)",
+                    background: "rgba(98,226,150,0.06)",
+                }}
+            >
+                <div className="text-[10px] font-mono uppercase tracking-widest text-[#62e296] mb-1 inline-flex items-center gap-1.5">
+                    💡 Action recommendation
+                </div>
+                <div className="text-sm text-[#fafafa] leading-relaxed">{action}</div>
+            </div>
+
+            <div className="flex items-center gap-2">
+                <span
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-mono uppercase tracking-widest"
+                    style={{
+                        background: `${priorityColor}10`,
+                        color: priorityColor,
+                        border: `1px solid ${priorityColor}55`,
+                    }}
+                >
+                    ● {gap.priority} priority
+                </span>
+            </div>
+        </div>
     );
 }

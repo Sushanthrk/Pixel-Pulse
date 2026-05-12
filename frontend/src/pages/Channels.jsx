@@ -97,16 +97,15 @@ export default function Channels() {
                 </span>
             </div>
             <h1 className="font-display uppercase tracking-tight font-black text-4xl sm:text-5xl mb-3">
-                Channel rig
+                Configure
             </h1>
             <p className="text-[#a0a0ab] text-sm max-w-3xl mb-6 leading-relaxed">
-                Wire up every public surface where your brand publishes. <strong>YouTube,
-                Medium, Substack, blog/RSS and Reddit</strong> auto-sync with their free public
-                APIs. <strong>LinkedIn, Instagram, Facebook, Pinterest and X</strong> are manual
-                (their official APIs are paid/gated, and scraping breaks their ToS) — we'll pull
-                your public profile name + photo via OpenGraph and you log post numbers from the
-                Analytics tab. Click <em>Refresh metadata</em> on any card to re-pull the OG
-                preview.
+                Add every public surface where your brand publishes — handles, profile URLs, RSS
+                feeds. <strong>YouTube, Medium, Substack, blog/RSS and Reddit</strong> auto-sync
+                with their free public APIs. <strong>LinkedIn, Instagram, Facebook, Pinterest and
+                X</strong> are manual (their official APIs are paid/gated) — we pull your public
+                profile name + photo via OpenGraph. Configurations on this page feed every other
+                tab.
             </p>
             <HairlineDivider className="mb-6" />
 
