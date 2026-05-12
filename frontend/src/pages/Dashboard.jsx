@@ -12,15 +12,19 @@ export default function Dashboard() {
     const [summary, setSummary] = useState(null);
     const [scores, setScores] = useState(null);
     const [refreshingSentiment, setRefreshingSentiment] = useState(false);
+    const [runningAll, setRunningAll] = useState(false);
+    const [lastRun, setLastRun] = useState(null);
 
     const load = async () => {
         try {
-            const [s, sc] = await Promise.all([
+            const [s, sc, lr] = await Promise.all([
                 api.get("/dashboard/summary", cq),
                 api.get("/dashboard/scores", cq),
+                api.get("/scheduler/last-run", cq),
             ]);
             setSummary(s.data);
             setScores(sc.data);
+            setLastRun(lr.data);
         } catch (_) {}
     };
 
@@ -41,6 +45,23 @@ export default function Dashboard() {
         setRefreshingSentiment(false);
     };
 
+    const runAll = async () => {
+        if (!window.confirm("Run a full sync now? This fetches every channel, competitor and GEO query. Takes ~1-2 min.")) return;
+        setRunningAll(true);
+        try {
+            const { data } = await api.post("/scheduler/run-all", {}, cq);
+            const errs = (data.errors || []).length;
+            const ch = (data.channels || []).length;
+            const co = (data.competitors || []).length;
+            const geo = data.geo?.total_runs || 0;
+            toast.success(`Synced ${ch} channels · ${co} competitors · ${geo} GEO runs${errs ? ` · ${errs} errors` : ""}`);
+            load();
+        } catch (e) {
+            toast.error(formatApiError(e.response?.data?.detail) || e.message);
+        }
+        setRunningAll(false);
+    };
+
     return (
         <div data-testid="dashboard-page">
             <div className="flex items-center gap-3 mb-2">
@@ -53,12 +74,27 @@ export default function Dashboard() {
                 <h1 className="font-display uppercase tracking-tight font-black text-4xl sm:text-5xl">
                     Brand pulse
                 </h1>
-                {summary && (
-                    <div className="font-mono-tech text-[10px] text-[#a0a0ab]">
-                        Channels online: {summary.channels_count} · Posts tracked:{" "}
-                        {summary.total_posts}
+                <div className="flex flex-col items-end gap-2">
+                    <button
+                        onClick={runAll}
+                        disabled={runningAll}
+                        className="pg-btn-primary"
+                        data-testid="run-all-sync-btn"
+                        title="Sync every channel, competitor and GEO query in one shot"
+                    >
+                        {runningAll ? "Running scheduler…" : "▶ Run sync now"}
+                    </button>
+                    <div className="font-mono-tech text-[10px] text-[#a0a0ab] text-right">
+                        {summary && (
+                            <>Channels online: {summary.channels_count} · Posts tracked: {summary.total_posts}</>
+                        )}
+                        {lastRun?.last_run && (
+                            <div className="text-[#a0a0ab]/70">
+                                Last full sync: {new Date(lastRun.last_run).toLocaleString()}
+                            </div>
+                        )}
                     </div>
-                )}
+                </div>
             </div>
 
             <HairlineDivider className="mb-8" />

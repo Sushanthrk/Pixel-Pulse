@@ -37,6 +37,11 @@ Free tools only. No paid APIs (no X/Twitter API, Stripe, Semrush, DataForSEO, pa
 - SEO: keyword CRUD + manual rank + optional Programmable Search auto-rank
 - Recommendations: long-tail keyword brief (GPT-5.2) + 6-month plan (Gemini 3 Flash)
 - Full Pixelgrok brand theme (Bricolage Grotesque, Inter, REC dot, timecode, corner brackets)
+- Public-page LLM scrape (`/api/{channels|competitors}/{id}/analyze`) — OpenGraph + visible-text → Claude → summary/positioning/themes/recent_signals/tone/ctas, surfaced via `IntelPanel`
+
+## What's been implemented — 2026-02-12
+- Fix: `IntelPanel` wiring on Competitors page (was reading missing `row.intel`; now merged from `/competitors` into scores rows)
+- Manual scheduler: `POST /api/scheduler/run-all` fans out every channel sync, competitor sync, OG refresh, public-page analyze, and full GEO scan in one shot. Persists last-run timestamp via `GET /api/scheduler/last-run`. UI button `▶ Run sync now` on Pulse dashboard.
 
 ## P1 backlog
 - Real OAuth wiring for Meta Graph API (Instagram + FB) and Pinterest API tokens

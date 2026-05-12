@@ -139,6 +139,9 @@ export default function Competitors() {
                 summary: scores.you.summary,
             },
         ];
+        const intelById = Object.fromEntries(
+            (competitors || []).map((c) => [c.id, c.intel])
+        );
         (scores.competitors || []).forEach((c, i) => {
             out.push({
                 key: c.id,
@@ -151,11 +154,12 @@ export default function Competitors() {
                 platform: c.platform,
                 handle: c.handle,
                 summary: c.summary,
+                intel: intelById[c.id] || null,
                 _id: c.id,
             });
         });
         return out;
-    }, [scores]);
+    }, [scores, competitors]);
 
     const maxBrand = Math.max(100, ...rows.map((r) => r.brand));
 

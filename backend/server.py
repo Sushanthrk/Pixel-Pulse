@@ -1343,6 +1343,211 @@ def timedelta_days(n: int):
 
 
 # ====================================================
+# SCHEDULER — manual "run all" trigger (replaces cron until P1 background scheduler lands)
+# ====================================================
+@api.post("/scheduler/run-all")
+async def run_all_syncs(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    """Manual fan-out: sync every auto-sync channel, every auto-sync competitor,
+    refresh OG metadata for manual channels/competitors, and run one GEO scan
+    across all active queries. Returns a per-task report. Free APIs only — same
+    code paths as the per-channel endpoints, just batched."""
+    cid = await _client_scope(user, client_id)
+    report: dict = {
+        "client_id": cid,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "channels": [],
+        "competitors": [],
+        "geo": None,
+        "errors": [],
+    }
+
+    AUTO = {"youtube", "medium", "substack", "blog", "reddit"}
+
+    # 1. Channels — auto-sync where supported, OG refresh otherwise
+    channels = await db.channels.find({"client_id": cid}, {"_id": 0}).to_list(200)
+    for ch in channels:
+        cid_ch = ch["id"]
+        platform = ch["platform"]
+        try:
+            if platform in AUTO:
+                posts, is_real = [], False
+                if platform == "youtube":
+                    posts, is_real = fetch_youtube(ch.get("handle") or ch.get("url", ""))
+                elif platform in {"medium", "substack", "blog"}:
+                    posts, is_real = fetch_rss(ch.get("url") or ch.get("handle", ""))
+                elif platform == "reddit":
+                    posts, is_real = fetch_reddit(ch.get("handle") or "")
+                await db.posts.delete_many({"channel_id": cid_ch, "source": "auto"})
+                inserted = 0
+                for p in posts:
+                    post = Post(
+                        client_id=ch["client_id"],
+                        platform=platform,
+                        channel_id=cid_ch,
+                        source="auto" if is_real else "mock",
+                        title=p.get("title", ""),
+                        snippet=p.get("snippet", ""),
+                        url=p.get("url", ""),
+                        posted_at=datetime.fromisoformat(p["posted_at"].replace("Z", "+00:00")) if isinstance(p["posted_at"], str) else p["posted_at"],
+                        likes=p.get("likes", 0),
+                        comments=p.get("comments", 0),
+                        shares=p.get("shares", 0),
+                        views=p.get("views", 0),
+                        media_type=p.get("media_type", "text"),
+                        hashtags=p.get("hashtags", []),
+                    )
+                    doc = post.model_dump()
+                    doc["posted_at"] = _dt(doc["posted_at"])
+                    doc["created_at"] = _dt(doc["created_at"])
+                    await db.posts.insert_one(doc)
+                    inserted += 1
+                await db.channels.update_one(
+                    {"id": cid_ch},
+                    {"$set": {"last_sync": datetime.now(timezone.utc).isoformat(),
+                              "status": "connected" if is_real else "mocked"}},
+                )
+                report["channels"].append({"id": cid_ch, "platform": platform, "handle": ch.get("handle"),
+                                            "mode": "auto-sync", "inserted": inserted, "is_real": is_real})
+            else:
+                # Manual platforms — just refresh OG metadata
+                url = ch.get("url") or ""
+                if not url and platform.startswith("linkedin") and ch.get("handle"):
+                    url = f"https://www.linkedin.com/in/{ch['handle'].lstrip('/').replace('in/', '')}"
+                if url:
+                    og = fetch_og_metadata(url)
+                    if any(og.values()):
+                        await db.channels.update_one({"id": cid_ch}, {"$set": {"og": og, "status": "metadata"}})
+                    report["channels"].append({"id": cid_ch, "platform": platform, "handle": ch.get("handle"),
+                                                "mode": "og-refresh", "og_keys": [k for k, v in og.items() if v]})
+                else:
+                    report["channels"].append({"id": cid_ch, "platform": platform, "handle": ch.get("handle"),
+                                                "mode": "skipped", "reason": "no url"})
+        except Exception as exc:
+            log.warning("scheduler channel %s failed: %s", cid_ch, exc)
+            report["errors"].append({"kind": "channel", "id": cid_ch, "error": str(exc)})
+
+    # 2. Competitors — auto-sync where supported
+    competitors = await db.competitors.find({"client_id": cid}, {"_id": 0}).to_list(100)
+    for comp in competitors:
+        cid_c = comp["id"]
+        platform = comp["platform"]
+        try:
+            if platform in AUTO:
+                posts, is_real = [], False
+                if platform == "youtube":
+                    posts, is_real = fetch_youtube(comp.get("handle") or comp.get("url", ""))
+                elif platform in {"medium", "substack", "blog"}:
+                    posts, is_real = fetch_rss(comp.get("url") or comp.get("handle", ""))
+                elif platform == "reddit":
+                    posts, is_real = fetch_reddit(comp.get("handle") or "")
+                await db.competitor_posts.delete_many({"competitor_id": cid_c})
+                for p in posts:
+                    cp = CompetitorPost(
+                        client_id=comp["client_id"],
+                        platform=platform,
+                        competitor_id=cid_c,
+                        source="auto" if is_real else "mock",
+                        title=p.get("title", ""),
+                        snippet=p.get("snippet", ""),
+                        url=p.get("url", ""),
+                        posted_at=datetime.fromisoformat(p["posted_at"].replace("Z", "+00:00")) if isinstance(p["posted_at"], str) else p["posted_at"],
+                        likes=p.get("likes", 0),
+                        comments=p.get("comments", 0),
+                        shares=p.get("shares", 0),
+                        views=p.get("views", 0),
+                        media_type=p.get("media_type", "text"),
+                        hashtags=p.get("hashtags", []),
+                    )
+                    doc = cp.model_dump()
+                    doc["posted_at"] = _dt(doc["posted_at"])
+                    doc["created_at"] = _dt(doc["created_at"])
+                    await db.competitor_posts.insert_one(doc)
+                report["competitors"].append({"id": cid_c, "platform": platform, "handle": comp.get("handle"),
+                                                "mode": "auto-sync", "inserted": len(posts), "is_real": is_real})
+            else:
+                # Manual platforms — re-analyze public page (free LLM scrape)
+                url = comp.get("url") or ""
+                if not url and platform.startswith("linkedin") and comp.get("handle"):
+                    url = f"https://www.linkedin.com/in/{comp['handle'].lstrip('/').replace('in/', '')}"
+                if url:
+                    intel = await _analyze_public_page(url, label=f"sched-comp-{cid_c}", scope="competitor")
+                    await db.competitors.update_one({"id": cid_c}, {"$set": {"intel": intel}})
+                    report["competitors"].append({"id": cid_c, "platform": platform, "handle": comp.get("handle"),
+                                                    "mode": "public-page-analyze",
+                                                    "limited": intel.get("limited_data") or bool(intel.get("fail_reason"))})
+                else:
+                    report["competitors"].append({"id": cid_c, "platform": platform, "handle": comp.get("handle"),
+                                                    "mode": "skipped", "reason": "no url"})
+        except Exception as exc:
+            log.warning("scheduler competitor %s failed: %s", cid_c, exc)
+            report["errors"].append({"kind": "competitor", "id": cid_c, "error": str(exc)})
+
+    # 3. GEO scan across all active queries (uses same code path as /geo/scan)
+    try:
+        queries = await db.geo_queries.find({"client_id": cid, "active": {"$ne": False}}, {"_id": 0}).to_list(50)
+        if queries:
+            import asyncio as _asyncio
+            engines = list(ENGINES.keys())
+            comp_handles = [c["handle"] for c in competitors]
+
+            async def _scan(q: dict, engine: str):
+                try:
+                    text = await _asyncio.wait_for(
+                        ask_engine(engine, "You are an unbiased general-knowledge assistant. Answer concisely.",
+                                    q["query"], session_id=f"sched-geo-{cid}-{q['id']}-{engine}"),
+                        timeout=40,
+                    )
+                    error = None
+                except Exception as exc:
+                    text, error = "", str(exc)
+                mentioned = detect_mentions(text, q.get("brand_terms", []))
+                comp_hits = extract_competitor_mentions(text, comp_handles)
+                r = GeoResult(client_id=cid, query_id=q["id"], query=q["query"], engine=engine,
+                              response=text[:4000] if not error else f"[ERROR] {error}",
+                              mentioned=mentioned, competitor_mentions=comp_hits)
+                doc = r.model_dump()
+                doc["ran_at"] = _dt(doc["ran_at"])
+                await db.geo_results.insert_one(doc)
+                return {"engine": engine, "query": q["query"], "mentioned": mentioned, "error": error}
+
+            tasks = [_scan(q, e) for q in queries for e in engines]
+            geo_results = await _asyncio.gather(*tasks)
+            report["geo"] = {
+                "queries_scanned": len(queries),
+                "engines": engines,
+                "total_runs": len(geo_results),
+                "mentions": sum(1 for r in geo_results if r.get("mentioned")),
+                "failed": [r["engine"] for r in geo_results if r.get("error")],
+            }
+        else:
+            report["geo"] = {"queries_scanned": 0, "reason": "no active GEO queries"}
+    except Exception as exc:
+        log.warning("scheduler geo failed: %s", exc)
+        report["errors"].append({"kind": "geo", "error": str(exc)})
+
+    report["finished_at"] = datetime.now(timezone.utc).isoformat()
+    # Store last run so the UI can show when it last ran
+    await db.scheduler_runs.replace_one(
+        {"client_id": cid},
+        {"client_id": cid, "last_run": report["finished_at"], "summary": {
+            "channels": len(report["channels"]),
+            "competitors": len(report["competitors"]),
+            "geo": report["geo"],
+            "errors": len(report["errors"]),
+        }},
+        upsert=True,
+    )
+    return report
+
+
+@api.get("/scheduler/last-run")
+async def get_last_scheduler_run(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    cid = await _client_scope(user, client_id)
+    doc = await db.scheduler_runs.find_one({"client_id": cid}, {"_id": 0})
+    return doc or {"client_id": cid, "last_run": None, "summary": None}
+
+
+# ====================================================
 from strategy_routes import get_strategy_router
 app.include_router(get_strategy_router(db))
 app.include_router(api)
