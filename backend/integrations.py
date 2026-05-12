@@ -62,6 +62,47 @@ def fetch_og_metadata(url: str) -> dict:
     return out
 
 
+def fetch_public_page_text(url: str, max_chars: int = 8000) -> tuple[str, str]:
+    """Fetch a public URL and return (visible_text, fail_reason).
+    fail_reason is empty on success, else describes why we couldn't extract content.
+    """
+    if not url:
+        return "", "no_url"
+    try:
+        resp = requests.get(
+            url,
+            timeout=10,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; PixelgrokPulseBot/1.0; +https://pixelgrok.com) like Gecko",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            allow_redirects=True,
+        )
+        if resp.status_code >= 400:
+            return "", f"http_{resp.status_code}"
+        html = resp.text[:400000]
+        # Strip script + style + head metadata blocks
+        cleaned = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.IGNORECASE)
+        cleaned = re.sub(r"<style[\s\S]*?</style>", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"<noscript[\s\S]*?</noscript>", " ", cleaned, flags=re.IGNORECASE)
+        # Extract visible text
+        text = re.sub(r"<[^>]+>", " ", cleaned)
+        text = re.sub(r"&nbsp;|&amp;|&quot;|&#39;|&lt;|&gt;", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text) < 200:
+            return text, "too_short_or_gated"
+        # Detect login walls
+        lt = text.lower()
+        signals = ["sign in to continue", "please log in", "join now to view", "create a free account to view"]
+        if any(s in lt for s in signals) and len(text) < 1500:
+            return text[:max_chars], "login_wall"
+        return text[:max_chars], ""
+    except Exception as exc:
+        log.warning("Public page fetch failed for %s: %s", url, exc)
+        return "", f"exception:{type(exc).__name__}"
+
+
 def _mock_posts(label: str, n: int = 8, media_type: str = "video") -> list[dict]:
     now = datetime.now(timezone.utc)
     items = []

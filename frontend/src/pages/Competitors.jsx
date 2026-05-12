@@ -13,6 +13,7 @@ import {
 import PlatformIcon from "../components/PlatformIcon";
 import AnimatedNumber from "../components/AnimatedNumber";
 import InfoTip from "../components/InfoTip";
+import IntelPanel from "../components/IntelPanel";
 import { PLATFORM_META, PLATFORM_KEYS, platformMeta } from "../lib/platforms";
 
 const PRIORITY_COLOR = { High: "#ff6b76", Medium: "#f5c84b", Low: "#62e296" };
@@ -70,6 +71,24 @@ export default function Competitors() {
         try {
             const { data } = await api.post(`/competitors/${id}/sync`);
             toast.success(`${data.is_real ? "Pulled" : "Inserted"} ${data.inserted} posts`);
+            load();
+        } catch (e) {
+            toast.error(formatApiError(e.response?.data?.detail) || e.message);
+        }
+        setBusy(null);
+    };
+
+    const analyzeOne = async (id) => {
+        setBusy(`analyze-${id}`);
+        try {
+            const { data } = await api.post(`/competitors/${id}/analyze`);
+            if (data.fail_reason && !data.summary) {
+                toast(`Couldn't read this page (${data.fail_reason}). Platform may be gating us.`);
+            } else if (data.limited_data) {
+                toast("Limited data — page partially gated. Showing what we could extract.");
+            } else {
+                toast.success("Public-page analysis complete");
+            }
             load();
         } catch (e) {
             toast.error(formatApiError(e.response?.data?.detail) || e.message);
@@ -248,8 +267,10 @@ export default function Competitors() {
                                 key={r.key}
                                 row={r}
                                 onSync={r._id ? () => syncOne(r._id) : null}
+                                onAnalyze={r._id ? () => analyzeOne(r._id) : null}
                                 onRemove={r._id ? () => remove(r._id) : null}
                                 busy={r._id ? busy === `sync-${r._id}` : false}
+                                analyzing={r._id ? busy === `analyze-${r._id}` : false}
                             />
                         ))}
                     </div>
@@ -340,8 +361,8 @@ export default function Competitors() {
     );
 }
 
-function CompetitorCard({ row, onSync, onRemove, busy }) {
-    const { is_you, name, color, brand, ai, sentiment, platform, summary } = row;
+function CompetitorCard({ row, onSync, onAnalyze, onRemove, busy, analyzing }) {
+    const { is_you, name, color, brand, ai, sentiment, platform, summary, intel } = row;
     return (
         <div
             className="pg-card p-5 relative overflow-hidden"
@@ -375,6 +396,9 @@ function CompetitorCard({ row, onSync, onRemove, busy }) {
                     </span>
                 ) : (
                     <div className="flex gap-1">
+                        <button onClick={onAnalyze} disabled={analyzing} className="pg-btn-ghost !text-[10px]" data-testid={`analyze-comp-${row._id}`} title="Scrape & analyze the public URL">
+                            {analyzing ? "…" : "✦ Analyze"}
+                        </button>
                         <button onClick={onSync} disabled={busy} className="pg-btn-ghost !text-[10px]">
                             {busy ? "…" : "Sync"}
                         </button>
@@ -414,6 +438,10 @@ function CompetitorCard({ row, onSync, onRemove, busy }) {
                 <div className="text-xs text-[#a0a0ab] leading-relaxed border-t border-[#a0a0ab]/10 pt-3 mt-2 relative">
                     {summary}
                 </div>
+            )}
+
+            {intel && (intel.summary || (intel.themes || []).length > 0) && (
+                <IntelPanel intel={intel} />
             )}
         </div>
     );

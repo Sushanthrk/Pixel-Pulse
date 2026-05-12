@@ -76,6 +76,24 @@ export default function Channels() {
         setBusy(null);
     };
 
+    const analyzePublic = async (id) => {
+        setBusy(`analyze-${id}`);
+        try {
+            const { data } = await api.post(`/channels/${id}/analyze`);
+            if (data.fail_reason && !data.summary) {
+                toast(`Couldn't read this page (${data.fail_reason}). Some platforms gate non-logged-in access.`);
+            } else if (data.limited_data) {
+                toast("Limited data — the page partially gated us. Showing what we could extract.");
+            } else {
+                toast.success("Public-page analysis complete");
+            }
+            load();
+        } catch (e) {
+            toast.error(formatApiError(e.response?.data?.detail) || e.message);
+        }
+        setBusy(null);
+    };
+
     const remove = async (id) => {
         if (!window.confirm("Remove this channel and its posts?")) return;
         try {
@@ -266,12 +284,21 @@ export default function Channels() {
                                     </button>
                                 )}
                                 <button
+                                    onClick={() => analyzePublic(c.id)}
+                                    disabled={busy === `analyze-${c.id}`}
+                                    className="pg-btn-secondary !text-[10px] !px-4 !py-2"
+                                    data-testid={`analyze-${c.id}`}
+                                    title="Scrape the public URL and ask the LLM what's there"
+                                >
+                                    {busy === `analyze-${c.id}` ? "Analysing…" : "✦ Analyze page"}
+                                </button>
+                                <button
                                     onClick={() => refreshMeta(c.id)}
                                     disabled={busy === `meta-${c.id}`}
-                                    className="pg-btn-secondary !text-[10px] !px-4 !py-2"
+                                    className="pg-btn-ghost !text-[10px]"
                                     data-testid={`refresh-meta-${c.id}`}
                                 >
-                                    {busy === `meta-${c.id}` ? "Fetching…" : "Refresh metadata"}
+                                    {busy === `meta-${c.id}` ? "Fetching…" : "Refresh meta"}
                                 </button>
                                 <button
                                     onClick={() => remove(c.id)}
@@ -281,6 +308,9 @@ export default function Channels() {
                                     Remove
                                 </button>
                             </div>
+                            {c.intel && (c.intel.summary || (c.intel.themes || []).length > 0) && (
+                                <IntelPanel intel={c.intel} />
+                            )}
                         </div>
                     );})}
                 </div>

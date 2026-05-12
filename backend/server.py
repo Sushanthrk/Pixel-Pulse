@@ -27,7 +27,7 @@ from auth import (
     set_auth_cookies,
     verify_password,
 )
-from integrations import fetch_og_metadata, fetch_reddit, fetch_rss, fetch_youtube, google_search_rank
+from integrations import fetch_og_metadata, fetch_public_page_text, fetch_reddit, fetch_rss, fetch_youtube, google_search_rank
 from llm_service import ENGINES, ask_engine, detect_mentions, extract_competitor_mentions
 from models import (
     AUTO_PLATFORMS,
@@ -1205,6 +1205,135 @@ async def refresh_channel_metadata(channel_id: str, user: dict = Depends(get_cur
         {"$set": {"og": og, "status": "metadata" if any(og.values()) else ch.get("status", "pending")}},
     )
     return {"og": og, "ok": True}
+
+
+# ----- Public-page LLM analysis (free, no paid APIs) -----
+async def _analyze_public_page(url: str, label: str, scope: str) -> dict:
+    """Fetch a public URL and ask the LLM to extract brand intelligence.
+    scope = "own" or "competitor" — tweaks the prompt accordingly.
+    Returns: {summary, positioning, themes, recent_signals, tone, ctas, fail_reason}
+    """
+    og = fetch_og_metadata(url)
+    text, fail = fetch_public_page_text(url)
+    if not text and (not og or not any(og.values())):
+        return {
+            "fail_reason": fail or "no_content",
+            "og": og,
+            "summary": "",
+            "positioning": "",
+            "themes": [],
+            "recent_signals": [],
+            "tone": "",
+            "ctas": [],
+            "analyzed_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    blended = (
+        f"URL: {url}\n"
+        f"OG title: {og.get('title','')}\n"
+        f"OG description: {og.get('description','')}\n"
+        f"Site name: {og.get('site_name','')}\n"
+        f"Visible text (truncated): {text[:6000]}"
+    )
+    angle = (
+        "You are analysing a competitor's public page to extract intelligence."
+        if scope == "competitor"
+        else "You are analysing our own brand's public page to baseline its positioning."
+    )
+    prompt = f"""{angle}
+Below is whatever we could pull from the public page. Some platforms (LinkedIn,
+Instagram, Facebook) gate non-logged-in access — if the text looks like a login
+wall or is sparse, return modest output and flag it via "limited_data": true.
+
+{blended}
+
+Return STRICT JSON ONLY in this shape:
+{{
+  "summary": "2-3 sentence neutral summary of what this page is and who it's for",
+  "positioning": "1 sentence on how the brand positions itself",
+  "themes": ["3-7 topic/theme tags they emphasise"],
+  "recent_signals": ["3-5 short bullets of any recent/notable content or moves visible on the page"],
+  "tone": "Professional|Conversational|Provocative|Inspirational|Technical|Mixed",
+  "ctas": ["any visible calls-to-action like 'Book a demo', 'Subscribe', 'Buy now'"],
+  "limited_data": <bool — true if the page was gated or too sparse>
+}}
+"""
+    raw = await ask_engine(
+        "claude-sonnet-4.5",
+        "You output ONLY valid JSON. No prose, no markdown.",
+        prompt,
+        session_id=f"analyze-{label}-{url[:60]}",
+    )
+    import json as _json
+    import re as _re
+    cleaned = _re.sub(r"^```(?:json)?|```$", "", (raw or "").strip(), flags=_re.MULTILINE).strip()
+    parsed: dict = {}
+    try:
+        parsed = _json.loads(cleaned)
+    except Exception:
+        m = _re.search(r"\{[\s\S]*\}", cleaned)
+        if m:
+            try:
+                parsed = _json.loads(m.group(0))
+            except Exception:
+                parsed = {}
+
+    return {
+        "fail_reason": fail,
+        "og": og,
+        "summary": str(parsed.get("summary") or "")[:1000],
+        "positioning": str(parsed.get("positioning") or "")[:500],
+        "themes": list(parsed.get("themes") or [])[:8],
+        "recent_signals": list(parsed.get("recent_signals") or [])[:6],
+        "tone": str(parsed.get("tone") or ""),
+        "ctas": list(parsed.get("ctas") or [])[:6],
+        "limited_data": bool(parsed.get("limited_data") or False),
+        "analyzed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@api.post("/channels/{channel_id}/analyze")
+async def analyze_channel(channel_id: str, user: dict = Depends(get_current_user)):
+    """Scrape the public URL (or OG image at minimum) and ask the LLM what we
+    can learn from it. No paid APIs — only what the web exposes publicly."""
+    ch = await db.channels.find_one({"id": channel_id}, {"_id": 0})
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    if user["role"] != "admin" and ch["client_id"] != user.get("client_id"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    url = ch.get("url") or ""
+    if not url and ch["platform"].startswith("linkedin") and ch.get("handle"):
+        h = ch["handle"].lstrip("/").replace("in/", "")
+        url = f"https://www.linkedin.com/in/{h}"
+    if not url:
+        raise HTTPException(status_code=400, detail="No URL on this channel to analyze")
+    intel = await _analyze_public_page(url, label=f"ch-{channel_id}", scope="own")
+    await db.channels.update_one(
+        {"id": channel_id},
+        {"$set": {"intel": intel, "og": intel.get("og") or ch.get("og") or {}}},
+    )
+    return intel
+
+
+@api.post("/competitors/{competitor_id}/analyze")
+async def analyze_competitor(competitor_id: str, user: dict = Depends(get_current_user)):
+    comp = await db.competitors.find_one({"id": competitor_id}, {"_id": 0})
+    if not comp:
+        raise HTTPException(status_code=404, detail="Competitor not found")
+    if user["role"] != "admin" and comp["client_id"] != user.get("client_id"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    url = comp.get("url") or ""
+    if not url and comp["platform"].startswith("linkedin") and comp.get("handle"):
+        h = comp["handle"].lstrip("/").replace("in/", "")
+        url = f"https://www.linkedin.com/in/{h}"
+    if not url:
+        raise HTTPException(status_code=400, detail="No URL on this competitor to analyze")
+    intel = await _analyze_public_page(url, label=f"comp-{competitor_id}", scope="competitor")
+    await db.competitors.update_one(
+        {"id": competitor_id},
+        {"$set": {"intel": intel}},
+    )
+    return intel
 
 
 # small helper to avoid importing timedelta inline above
