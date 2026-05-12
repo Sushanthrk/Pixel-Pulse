@@ -10,8 +10,10 @@ const CLIENT_NAV = [
     { to: "/analytics", label: "Analytics" },
     { to: "/competitors", label: "Competitors" },
     { to: "/geo", label: "Geo" },
+    { to: "/sentiment", label: "Sentiment" },
+    { to: "/ai-plan", label: "AI Plan" },
+    { to: "/content-plan", label: "Content" },
     { to: "/seo", label: "Seo" },
-    { to: "/plan", label: "Plan" },
 ];
 
 const ADMIN_NAV = [{ to: "/admin/clients", label: "Clients" }, ...CLIENT_NAV];

@@ -1214,6 +1214,8 @@ def timedelta_days(n: int):
 
 
 # ====================================================
+from strategy_routes import get_strategy_router
+app.include_router(get_strategy_router(db))
 app.include_router(api)
 app.add_middleware(
     CORSMiddleware,

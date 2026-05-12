@@ -10,7 +10,9 @@ import Analytics from "@/pages/Analytics";
 import Competitors from "@/pages/Competitors";
 import Geo from "@/pages/Geo";
 import Seo from "@/pages/Seo";
-import Plan from "@/pages/Plan";
+import ContentPlan from "@/pages/ContentPlan";
+import Sentiment from "@/pages/Sentiment";
+import AIActionPlan from "@/pages/AIActionPlan";
 import { Toaster } from "sonner";
 
 function Protected({ children, adminOnly = false }) {
@@ -105,7 +107,31 @@ function App() {
                         path="/plan"
                         element={
                             <Protected>
-                                <Plan />
+                                <ContentPlan />
+                            </Protected>
+                        }
+                    />
+                    <Route
+                        path="/content-plan"
+                        element={
+                            <Protected>
+                                <ContentPlan />
+                            </Protected>
+                        }
+                    />
+                    <Route
+                        path="/sentiment"
+                        element={
+                            <Protected>
+                                <Sentiment />
+                            </Protected>
+                        }
+                    />
+                    <Route
+                        path="/ai-plan"
+                        element={
+                            <Protected>
+                                <AIActionPlan />
                             </Protected>
                         }
                     />
