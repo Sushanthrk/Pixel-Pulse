@@ -122,11 +122,14 @@ export default function Competitors() {
         setRefreshing(false);
     };
 
-    // Build [You, comp1, comp2…] with colors assigned
+    // Build [You, comp1, comp2…] with colors assigned.
+    // Every competitor that exists in the DB shows up — even before scores refresh —
+    // so the user can always remove them.
     const rows = useMemo(() => {
-        if (!scores?.you) return [];
-        const out = [
-            {
+        if (!scores?.you && (competitors || []).length === 0) return [];
+        const out = [];
+        if (scores?.you) {
+            out.push({
                 key: "you",
                 name: "You",
                 is_you: true,
@@ -137,24 +140,29 @@ export default function Competitors() {
                 platform: null,
                 handle: "Your brand",
                 summary: scores.you.summary,
-            },
-        ];
+            });
+        }
         const intelById = Object.fromEntries(
             (competitors || []).map((c) => [c.id, c.intel])
         );
-        (scores.competitors || []).forEach((c, i) => {
+        const scoresById = Object.fromEntries(
+            ((scores && scores.competitors) || []).map((c) => [c.id, c])
+        );
+        (competitors || []).forEach((c, i) => {
+            const s = scoresById[c.id];
             out.push({
                 key: c.id,
                 name: c.handle,
                 is_you: false,
-                brand: c.brand_score ?? 0,
-                ai: c.ai_visibility ?? 0,
-                sentiment: c.sentiment ?? 0,
+                brand: s?.brand_score ?? 0,
+                ai: s?.ai_visibility ?? 0,
+                sentiment: s?.sentiment ?? 0,
                 color: CARD_PALETTE[(i + 1) % CARD_PALETTE.length],
                 platform: c.platform,
                 handle: c.handle,
-                summary: c.summary,
+                summary: s?.summary,
                 intel: intelById[c.id] || null,
+                unscored: !s,
                 _id: c.id,
             });
         });
@@ -366,7 +374,7 @@ export default function Competitors() {
 }
 
 function CompetitorCard({ row, onSync, onAnalyze, onRemove, busy, analyzing }) {
-    const { is_you, name, color, brand, ai, sentiment, platform, summary, intel } = row;
+    const { is_you, name, color, brand, ai, sentiment, platform, summary, intel, unscored } = row;
     return (
         <div
             className="pg-card p-5 relative overflow-hidden"
@@ -380,8 +388,8 @@ function CompetitorCard({ row, onSync, onAnalyze, onRemove, busy, analyzing }) {
             />
 
             {/* header */}
-            <div className="flex items-center justify-between mb-4 relative">
-                <div className="flex items-center gap-2 min-w-0">
+            <div className="flex items-center justify-between mb-4 relative gap-2">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
                     {platform && <PlatformIcon platform={platform} size={20} />}
                     <div className="font-display uppercase tracking-tight font-bold text-base truncate">
                         {name}
@@ -399,17 +407,30 @@ function CompetitorCard({ row, onSync, onAnalyze, onRemove, busy, analyzing }) {
                         ● YOU
                     </span>
                 ) : (
-                    <div className="flex gap-1">
+                    <div className="flex gap-1 flex-wrap justify-end">
                         <button onClick={onAnalyze} disabled={analyzing} className="pg-btn-ghost !text-[10px]" data-testid={`analyze-comp-${row._id}`} title="Scrape & analyze the public URL">
                             {analyzing ? "…" : "✦ Analyze"}
                         </button>
-                        <button onClick={onSync} disabled={busy} className="pg-btn-ghost !text-[10px]">
+                        <button onClick={onSync} disabled={busy} className="pg-btn-ghost !text-[10px]" title="Pull latest posts (auto-sync platforms only)">
                             {busy ? "…" : "Sync"}
                         </button>
-                        <button onClick={onRemove} className="pg-btn-ghost !text-[10px]">×</button>
+                        <button
+                            onClick={onRemove}
+                            className="pg-btn-ghost !text-[10px] hover:!text-[#ff6b76] hover:!border-[#ff6b76]/60"
+                            data-testid={`remove-comp-${row._id}`}
+                            title="Stop tracking this competitor"
+                        >
+                            ✕ Remove
+                        </button>
                     </div>
                 )}
             </div>
+
+            {unscored && !is_you && (
+                <div className="mb-3 px-2 py-1 border border-[#f5c84b]/40 bg-[#f5c84b]/10 text-[#f5c84b] text-[10px] font-mono uppercase tracking-widest inline-flex items-center gap-1">
+                    ⚠ not scored yet — hit Refresh intelligence
+                </div>
+            )}
 
             {/* Big overall score ring */}
             <div className="flex items-center gap-4 mb-5 relative">
