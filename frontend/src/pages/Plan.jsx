@@ -58,9 +58,17 @@ export default function Plan() {
                     // strategy / plan
                 </span>
             </div>
-            <h1 className="font-display uppercase tracking-tight font-black text-4xl sm:text-5xl mb-8">
+            <h1 className="font-display uppercase tracking-tight font-black text-4xl sm:text-5xl mb-3">
                 Strategy lab
             </h1>
+            <p className="text-[#a0a0ab] text-sm max-w-3xl mb-6 leading-relaxed">
+                Two on-demand briefings built by the LLM stack. <strong>Keyword recommendations</strong>{" "}
+                generates 20 long-tail keywords (low competition, India-focused by default) based on
+                seed text or your latest posts — use this to plan blog topics or PPC negatives.{" "}
+                <strong>Content + outreach plan</strong> produces a month-by-month roadmap covering
+                content drops, outreach moves, and the KPI to watch for each month — share this with
+                your team or paste it into a deck. Everything is plain text so it copies cleanly.
+            </p>
             <HairlineDivider className="mb-6" />
 
             <div className="grid lg:grid-cols-2 gap-6 mb-10">

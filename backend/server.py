@@ -27,7 +27,7 @@ from auth import (
     set_auth_cookies,
     verify_password,
 )
-from integrations import fetch_reddit, fetch_rss, fetch_youtube, google_search_rank
+from integrations import fetch_og_metadata, fetch_reddit, fetch_rss, fetch_youtube, google_search_rank
 from llm_service import ENGINES, ask_engine, detect_mentions, extract_competitor_mentions
 from models import (
     AUTO_PLATFORMS,
@@ -298,8 +298,19 @@ async def create_channel(payload: ChannelIn, client_id: Optional[str] = None, us
         sync_mode="auto" if payload.platform in AUTO_PLATFORMS else "manual",
         status="pending",
     )
+    # Best-effort fetch of OpenGraph metadata for the URL so manual-entry
+    # channels (LinkedIn, Instagram, X, Pinterest, custom) at least have a
+    # name, headline and profile picture cached.
+    meta_url = payload.url or ""
+    if not meta_url and payload.platform.startswith("linkedin") and payload.handle:
+        meta_url = f"https://www.linkedin.com/in/{payload.handle.lstrip('/').replace('in/', '')}"
+    og = fetch_og_metadata(meta_url) if meta_url else {}
+    if og and any(og.values()):
+        ch.status = "metadata"  # profile metadata cached, but no posts yet
     doc = ch.model_dump()
     doc["created_at"] = doc["created_at"].isoformat()
+    if og:
+        doc["og"] = og
     await db.channels.insert_one(doc)
     doc.pop("_id", None)
     return doc
@@ -993,6 +1004,207 @@ async def dashboard_summary(client_id: Optional[str] = None, user: dict = Depend
         "total_posts": len(posts),
         "channels_count": len(channels),
     }
+
+
+@api.get("/dashboard/scores")
+async def dashboard_scores(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    """Composite scores for the Pulse overview tab."""
+    cid = await _client_scope(user, client_id)
+    posts = await db.posts.find({"client_id": cid}, {"_id": 0}).to_list(2000)
+    channels = await db.channels.find({"client_id": cid}, {"_id": 0}).to_list(100)
+    geo_results = await db.geo_results.find({"client_id": cid}, {"_id": 0}).to_list(1000)
+    sentiment_doc = await db.brand_sentiment.find_one({"client_id": cid}, {"_id": 0})
+
+    now = datetime.now(timezone.utc)
+    cutoff_30 = now - timedelta_days(30)
+
+    def _parse_dt(value) -> datetime:
+        if isinstance(value, datetime):
+            return value
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except Exception:
+            return now
+
+    posts_30d = [p for p in posts if _parse_dt(p["posted_at"]) >= cutoff_30]
+    eng_30d = sum(p.get("likes", 0) + p.get("comments", 0) + p.get("shares", 0) for p in posts_30d)
+
+    # ----- AI Visibility -----
+    latest_by_pair: dict[str, dict] = {}
+    for r in geo_results:
+        k = f"{r['query_id']}::{r['engine']}"
+        if k not in latest_by_pair or _parse_dt(r["ran_at"]) > _parse_dt(latest_by_pair[k]["ran_at"]):
+            latest_by_pair[k] = r
+    total_pairs = len(latest_by_pair)
+    hit_pairs = sum(1 for r in latest_by_pair.values() if r.get("mentioned"))
+    ai_visibility = round((hit_pairs / total_pairs) * 100) if total_pairs else 0
+
+    # per-engine breakdown for the score card
+    engines_seen = {"gpt-5.2", "claude-sonnet-4.5", "gemini-3-flash"}
+    engine_breakdown = []
+    for eng in engines_seen:
+        eng_pairs = [r for r in latest_by_pair.values() if r["engine"] == eng]
+        eng_hits = sum(1 for r in eng_pairs if r.get("mentioned"))
+        engine_breakdown.append({
+            "engine": eng,
+            "total": len(eng_pairs),
+            "hits": eng_hits,
+            "rate": round((eng_hits / len(eng_pairs)) * 100) if eng_pairs else 0,
+        })
+
+    # ----- Brand Score (overall presence) -----
+    # weighted blend: channels connected (max 40), posts in last 30d (max 30),
+    # ai_visibility (max 30). Clamp 0-100.
+    channel_subscore = min(40, len(channels) * 8)
+    posts_subscore = min(30, len(posts_30d) * 1.5)
+    ai_subscore = ai_visibility * 0.3
+    brand_score = round(channel_subscore + posts_subscore + ai_subscore)
+    brand_score = max(0, min(100, brand_score))
+
+    # ----- Sentiment -----
+    sentiment_score = (sentiment_doc or {}).get("score", 0)
+    sentiment_summary = (sentiment_doc or {}).get("summary", "")
+    sentiment_updated_at = (sentiment_doc or {}).get("updated_at")
+    sentiment_breakdown = (sentiment_doc or {}).get("breakdown", {})
+
+    # ----- Channel Performance (visibility across channels) -----
+    perf = []
+    max_eng = max(
+        [
+            sum(p.get("likes", 0) + p.get("comments", 0) + p.get("shares", 0)
+                for p in posts_30d if p["platform"] == ch["platform"])
+            for ch in channels
+        ] or [1]
+    )
+    for ch in channels:
+        plt_posts = [p for p in posts_30d if p["platform"] == ch["platform"]]
+        eng = sum(p.get("likes", 0) + p.get("comments", 0) + p.get("shares", 0) for p in plt_posts)
+        visibility = round((eng / max_eng) * 100) if max_eng else 0
+        cadence_score = min(100, len(plt_posts) * 12)  # ~8 posts/mo = 100
+        perf.append({
+            "id": ch["id"],
+            "platform": ch["platform"],
+            "handle": ch.get("handle") or ch.get("url", ""),
+            "posts_30d": len(plt_posts),
+            "engagement_30d": eng,
+            "visibility": visibility,
+            "cadence": cadence_score,
+            "status": ch.get("status", "pending"),
+            "sync_mode": ch.get("sync_mode", "manual"),
+            "last_sync": ch.get("last_sync"),
+            "og": ch.get("og") or {},
+        })
+    # Sort by engagement, highest first
+    perf.sort(key=lambda r: r["engagement_30d"], reverse=True)
+
+    return {
+        "brand_score": brand_score,
+        "brand_subscores": {
+            "channels": round(channel_subscore),
+            "cadence": round(posts_subscore),
+            "ai": round(ai_subscore),
+        },
+        "ai_visibility": {
+            "score": ai_visibility,
+            "hits": hit_pairs,
+            "total": total_pairs,
+            "engines": engine_breakdown,
+        },
+        "sentiment": {
+            "score": sentiment_score,
+            "summary": sentiment_summary,
+            "breakdown": sentiment_breakdown,
+            "updated_at": sentiment_updated_at,
+            "ready": bool(sentiment_doc),
+        },
+        "channel_performance": perf,
+        "posts_30d": len(posts_30d),
+        "engagement_30d": eng_30d,
+    }
+
+
+@api.post("/dashboard/sentiment/refresh")
+async def refresh_sentiment(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    """Ask the LLM to analyse recent post titles/snippets and produce a 0-100 sentiment."""
+    cid = await _client_scope(user, client_id)
+    posts = await db.posts.find(
+        {"client_id": cid}, {"_id": 0, "title": 1, "snippet": 1, "platform": 1}
+    ).sort("posted_at", -1).to_list(40)
+    if not posts:
+        return {"score": 0, "summary": "No posts yet — connect a channel first.", "ready": False}
+
+    sample = "\n".join(
+        f"- [{p['platform']}] {(p.get('title') or '')[:120]} :: {(p.get('snippet') or '')[:160]}"
+        for p in posts[:30]
+    )
+    prompt = (
+        "Analyse the overall public-facing brand sentiment based on these recent posts. "
+        "Output STRICT JSON only (no prose) in this exact shape:\n"
+        '{ "score": <0-100 integer, 0=very negative, 50=neutral, 100=very positive>, '
+        '"summary": "<2-3 sentences>", "breakdown": {"positive": <int>, "neutral": <int>, "negative": <int>} }\n'
+        "The three breakdown values must sum to 100.\n\nPosts:\n" + sample
+    )
+    text = await ask_engine(
+        "claude-sonnet-4.5",
+        "You are a brand sentiment analyst. Output ONLY valid JSON.",
+        prompt,
+        session_id=f"sentiment-{cid}",
+    )
+    import json as _json
+    import re as _re
+    cleaned = _re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=_re.MULTILINE).strip()
+    parsed = {}
+    try:
+        parsed = _json.loads(cleaned)
+    except Exception:
+        m = _re.search(r"\{[\s\S]*\}", cleaned)
+        if m:
+            try:
+                parsed = _json.loads(m.group(0))
+            except Exception:
+                parsed = {}
+
+    score = int(parsed.get("score") or 50) if isinstance(parsed.get("score"), (int, float, str)) else 50
+    score = max(0, min(100, score))
+    summary = str(parsed.get("summary") or "")[:600]
+    breakdown = parsed.get("breakdown") or {}
+    if not isinstance(breakdown, dict):
+        breakdown = {}
+
+    doc = {
+        "client_id": cid,
+        "score": score,
+        "summary": summary,
+        "breakdown": breakdown,
+        "raw": text[:4000],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.brand_sentiment.replace_one({"client_id": cid}, doc, upsert=True)
+    doc.pop("_id", None)
+    return {**doc, "ready": True}
+
+
+@api.post("/channels/{channel_id}/refresh-metadata")
+async def refresh_channel_metadata(channel_id: str, user: dict = Depends(get_current_user)):
+    """Re-pull OpenGraph metadata for a channel. Useful when a profile updates
+    its picture/headline or when LinkedIn momentarily un-blocks us."""
+    ch = await db.channels.find_one({"id": channel_id}, {"_id": 0})
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    if user["role"] != "admin" and ch["client_id"] != user.get("client_id"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    url = ch.get("url") or ""
+    if not url and ch["platform"].startswith("linkedin") and ch.get("handle"):
+        handle = ch["handle"].lstrip("/").replace("in/", "")
+        url = f"https://www.linkedin.com/in/{handle}"
+    if not url:
+        raise HTTPException(status_code=400, detail="No URL on channel to fetch metadata from")
+    og = fetch_og_metadata(url)
+    await db.channels.update_one(
+        {"id": channel_id},
+        {"$set": {"og": og, "status": "metadata" if any(og.values()) else ch.get("status", "pending")}},
+    )
+    return {"og": og, "ok": True}
 
 
 # small helper to avoid importing timedelta inline above

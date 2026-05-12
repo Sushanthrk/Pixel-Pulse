@@ -17,10 +17,49 @@ import requests
 
 log = logging.getLogger(__name__)
 HASHTAG_RE = re.compile(r"#(\w+)")
+OG_META_RE = re.compile(
+    r"<meta\s+[^>]*(?:property|name)=[\"'](og:[^\"']+|twitter:[^\"']+|description)[\"'][^>]*content=[\"']([^\"']+)[\"']",
+    re.IGNORECASE,
+)
 
 
 def _hashtags(text: str) -> List[str]:
     return [h.lower() for h in HASHTAG_RE.findall(text or "")]
+
+
+def fetch_og_metadata(url: str) -> dict:
+    """Pull OpenGraph + Twitter card meta tags from a public URL.
+    Returns {title, description, image, site_name} — empty strings if unavailable.
+    LinkedIn often gates this with a login wall but most platforms expose OG."""
+    out = {"title": "", "description": "", "image": "", "site_name": ""}
+    if not url:
+        return out
+    try:
+        resp = requests.get(
+            url,
+            timeout=8,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; PixelgrokPulseBot/1.0; +https://pixelgrok.com)",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            allow_redirects=True,
+        )
+        if resp.status_code >= 400:
+            return out
+        html = resp.text[:200000]  # cap response size
+        for prop, content in OG_META_RE.findall(html):
+            p = prop.lower()
+            if p == "og:title" and not out["title"]:
+                out["title"] = content
+            elif p in ("og:description", "twitter:description", "description") and not out["description"]:
+                out["description"] = content
+            elif p in ("og:image", "twitter:image") and not out["image"]:
+                out["image"] = content
+            elif p == "og:site_name" and not out["site_name"]:
+                out["site_name"] = content
+    except Exception as exc:
+        log.warning("OG fetch failed for %s: %s", url, exc)
+    return out
 
 
 def _mock_posts(label: str, n: int = 8, media_type: str = "video") -> list[dict]:

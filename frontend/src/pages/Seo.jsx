@@ -105,9 +105,16 @@ export default function Seo() {
                     // organic search · keyword ranking
                 </span>
             </div>
-            <h1 className="font-display uppercase tracking-tight font-black text-4xl sm:text-5xl mb-8">
+            <h1 className="font-display uppercase tracking-tight font-black text-4xl sm:text-5xl mb-3">
                 Search rank
             </h1>
+            <p className="text-[#a0a0ab] text-sm max-w-3xl mb-6 leading-relaxed">
+                Track how high your domain ranks on Google for specific keywords your audience
+                actually types. Add a keyword + your domain, then log positions weekly (or auto-fetch
+                if you've wired a Google Programmable Search key). The chart below each keyword
+                shows the rank trend — closer to <strong>1</strong> = better. Use this to prove SEO
+                progress to leadership and to spot keywords slipping out of page&nbsp;1.
+            </p>
             <HairlineDivider className="mb-6" />
 
             <div className="grid lg:grid-cols-3 gap-6 mb-10">

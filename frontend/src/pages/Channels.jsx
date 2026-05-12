@@ -58,6 +58,24 @@ export default function Channels() {
         setBusy(null);
     };
 
+    const refreshMeta = async (id) => {
+        setBusy(`meta-${id}`);
+        try {
+            const { data } = await api.post(`/channels/${id}/refresh-metadata`);
+            if (data.og && Object.values(data.og).some(Boolean)) {
+                toast.success("Profile metadata refreshed");
+            } else {
+                toast(
+                    "Couldn't read public metadata (the platform may be gating us). The channel still works in manual mode.",
+                );
+            }
+            load();
+        } catch (e) {
+            toast.error(formatApiError(e.response?.data?.detail) || e.message);
+        }
+        setBusy(null);
+    };
+
     const remove = async (id) => {
         if (!window.confirm("Remove this channel and its posts?")) return;
         try {
@@ -78,9 +96,18 @@ export default function Channels() {
                     // setup / channels
                 </span>
             </div>
-            <h1 className="font-display uppercase tracking-tight font-black text-4xl sm:text-5xl mb-8">
+            <h1 className="font-display uppercase tracking-tight font-black text-4xl sm:text-5xl mb-3">
                 Channel rig
             </h1>
+            <p className="text-[#a0a0ab] text-sm max-w-3xl mb-6 leading-relaxed">
+                Wire up every public surface where your brand publishes. <strong>YouTube,
+                Medium, Substack, blog/RSS and Reddit</strong> auto-sync with their free public
+                APIs. <strong>LinkedIn, Instagram, Facebook, Pinterest and X</strong> are manual
+                (their official APIs are paid/gated, and scraping breaks their ToS) — we'll pull
+                your public profile name + photo via OpenGraph and you log post numbers from the
+                Analytics tab. Click <em>Refresh metadata</em> on any card to re-pull the OG
+                preview.
+            </p>
             <HairlineDivider className="mb-6" />
 
             <div className="grid lg:grid-cols-3 gap-6 mb-10">
@@ -197,18 +224,34 @@ export default function Channels() {
                             />
                             <div className="flex items-start justify-between mb-3 relative">
                                 <div className="flex items-center gap-3">
-                                    <PlatformIcon platform={c.platform} size={28} />
+                                    {c.og?.image ? (
+                                        <img
+                                            src={c.og.image}
+                                            alt=""
+                                            className="w-10 h-10 object-cover border border-[#a0a0ab]/25"
+                                            onError={(e) => {
+                                                e.currentTarget.style.display = "none";
+                                            }}
+                                        />
+                                    ) : (
+                                        <PlatformIcon platform={c.platform} size={28} />
+                                    )}
                                     <div>
                                         <div className="font-display uppercase tracking-tight font-bold text-lg leading-none">
                                             {meta.label}
                                         </div>
                                         <div className="text-xs font-mono text-[#a0a0ab] uppercase tracking-widest mt-1 break-all">
-                                            {c.handle || c.url}
+                                            {c.og?.title || c.handle || c.url}
                                         </div>
                                     </div>
                                 </div>
                                 <StatusBadge status={c.status} sync_mode={c.sync_mode} />
                             </div>
+                            {c.og?.description && (
+                                <div className="text-xs text-[#a0a0ab] mb-3 line-clamp-2 leading-relaxed">
+                                    {c.og.description}
+                                </div>
+                            )}
                             <div className="text-[10px] font-mono text-[#a0a0ab] uppercase tracking-widest mb-4">
                                 Last sync: {c.last_sync ? new Date(c.last_sync).toLocaleString() : "never"}
                             </div>
@@ -223,6 +266,14 @@ export default function Channels() {
                                         {busy === c.id ? "Syncing…" : "Sync now"}
                                     </button>
                                 )}
+                                <button
+                                    onClick={() => refreshMeta(c.id)}
+                                    disabled={busy === `meta-${c.id}`}
+                                    className="pg-btn-secondary !text-[10px] !px-4 !py-2"
+                                    data-testid={`refresh-meta-${c.id}`}
+                                >
+                                    {busy === `meta-${c.id}` ? "Fetching…" : "Refresh metadata"}
+                                </button>
                                 <button
                                     onClick={() => remove(c.id)}
                                     className="pg-btn-ghost"
